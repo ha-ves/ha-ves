@@ -95,7 +95,9 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           # Check if there are changes to commit
-          if git diff --quiet github-metrics.svg; then
+          if [ ! -f github-metrics.svg ]; then
+            echo "github-metrics.svg not found, nothing to commit"
+          elif git diff --quiet github-metrics.svg; then
             echo "No changes detected in github-metrics.svg, skipping commit"
           else
             git add github-metrics.svg
