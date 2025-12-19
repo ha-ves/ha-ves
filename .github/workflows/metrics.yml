@@ -24,9 +24,8 @@ jobs:
           primary-runner: "self-hosted"
           # Fallback to GitHub-hosted if self-hosted is unavailable
           fallback-runner: "ubuntu-latest"
-          # For repo-scoped runners GITHUB_TOKEN is fine. For org-level runner checks,
-          # create a PAT with appropriate permissions and put it in a secret, then use it here.
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Must have org:admin permissions, GitHub runner APIs require it
+          github-token: ${{ secrets.METRICS_TOKEN }}
 
   github-metrics:
     needs: determine-runner
