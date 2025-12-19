@@ -10,8 +10,27 @@ on:
   workflow_dispatch:
   push: {branches: ["master", "main"]}
 jobs:
+  determine-runner:
+    name: Determine runner (self-hosted or fallback)
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.set-runner.outputs.use-runner }}
+    steps:
+      - name: Determine which runner to use
+        id: set-runner
+        uses: mikehardy/runner-fallback-action@v1
+        with:
+          # Prefer your self-hosted runner label(s); change if you use custom labels
+          primary-runner: "self-hosted"
+          # Fallback to GitHub-hosted if self-hosted is unavailable
+          fallback-runner: "ubuntu-latest"
+          # For repo-scoped runners GITHUB_TOKEN is fine. For org-level runner checks,
+          # create a PAT with appropriate permissions and put it in a secret, then use it here.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   github-metrics:
-    runs-on: self-hosted
+    needs: determine-runner
+    runs-on: ${{ fromJson(needs.determine-runner.outputs.runner) }}
     permissions:
       contents: write
     steps:
