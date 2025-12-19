@@ -15,10 +15,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Check if last commit is from GitHub Actions
+        id: check_last_commit
+        run: |
+          LAST_COMMIT_AUTHOR=$(git log -1 --format='%an')
+          echo "Last commit author: $LAST_COMMIT_AUTHOR"
+          if [ "$LAST_COMMIT_AUTHOR" = "github-actions[bot]" ]; then
+            echo "force_push=true" >> $GITHUB_OUTPUT
+            echo "Last commit was from GitHub Actions, will force push"
+          else
+            echo "force_push=false" >> $GITHUB_OUTPUT
+            echo "Last commit was not from GitHub Actions, will create new commit"
+          fi
+      
       - uses: lowlighter/metrics@latest
         with:
           token: ${{ secrets.METRICS_TOKEN }}
-
+          
+          # Disable automatic committing so we can handle it ourselves
+          committer_token: ""
+          
           # Options
           user: ha-ves
           template: classic
@@ -67,3 +88,29 @@ jobs:
           plugin_topics_mode: labels
           plugin_topics_sort: activity
           plugin_traffic: yes
+      
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Check if there are changes to commit
+          if [ ! -f github-metrics.svg ]; then
+            echo "github-metrics.svg not found, nothing to commit"
+          elif git diff --quiet github-metrics.svg; then
+            echo "No changes detected in github-metrics.svg, skipping commit"
+          else
+            git add github-metrics.svg
+            
+            if [ "${{ steps.check_last_commit.outputs.force_push }}" = "true" ]; then
+              echo "Amending previous commit to avoid pileup..."
+              git commit --amend -m "Update github-metrics.svg - [Skip GitHub Action]"
+              git push --force-with-lease origin ${{ github.ref_name }}
+              echo "Force pushed amended commit"
+            else
+              echo "Creating new commit..."
+              git commit -m "Update github-metrics.svg - [Skip GitHub Action]"
+              git push origin ${{ github.ref_name }}
+              echo "Pushed new commit"
+            fi
+          fi
