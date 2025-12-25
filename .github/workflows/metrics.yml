@@ -70,7 +70,7 @@ jobs:
           token: ${{ secrets.METRICS_TOKEN }}
           
           # Disable automatic committing so we can handle it ourselves
-          committer_token: ""
+          output_action: none
           
           # Options
           user: ha-ves
@@ -101,8 +101,9 @@ jobs:
           plugin_languages_sections: most-used
           plugin_languages_threshold: 0%
           plugin_notable: yes
-          plugin_notable_from: organization
+          plugin_notable_from: all
           plugin_notable_repositories: yes
+          plugin_notable_skipped: sipsorcery-org/SIPSorceryMedia.FFmpeg, sipsorcery-org/SIPSorceryMedia.Abstractions
           plugin_notable_types: commit, pull_request
           plugin_people: yes
           plugin_people_limit: 24
@@ -121,29 +122,40 @@ jobs:
           plugin_topics_sort: activity
           plugin_traffic: yes
       
-      - name: Commit and push changes
+      - name: Move metrics output and check for changes
         if: steps.check_skip.outputs.skip != 'true'
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "github-actions[bot]"
+          set +e
           
-          # Check if there are changes to commit
-          if [ ! -f github-metrics.svg ]; then
-            echo "github-metrics.svg not found, nothing to commit"
-          elif git diff --quiet github-metrics.svg; then
-            echo "No changes detected in github-metrics.svg, skipping commit"
+          # Move files from /metrics_renders to repo root
+          if [ -d /metrics_renders ]; then
+            sudo mv /metrics_renders/* ./
+            echo "Moved metrics outputs from /metrics_renders"
           else
-            git add github-metrics.svg
-            
-            if [ "${{ steps.check_last_commit.outputs.force_push }}" = "true" ]; then
-              echo "Amending previous commit to avoid pileup..."
-              git commit --amend -m "Update github-metrics.svg - [Skip GitHub Action]"
-              git push --force-with-lease origin ${{ github.ref_name }}
-              echo "Force pushed amended commit"
-            else
-              echo "Creating new commit..."
-              git commit -m "Update github-metrics.svg - [Skip GitHub Action]"
-              git push origin ${{ github.ref_name }}
-              echo "Pushed new commit"
-            fi
+            echo "/metrics_renders directory not found"
+          fi
+          
+          # Check if there are changes
+          if git diff --quiet; then
+            echo "No changes detected, skipping commit"
+            exit 0
+          fi
+          
+          ## Configure git
+          # git config --local user.email "action@github.com"
+          # git config --local user.name "github-actions[bot]"
+          
+          # Add and commit changes
+          git add --all
+          
+          if [ "${{ steps.check_last_commit.outputs.force_push }}" = "true" ]; then
+            echo "Amending previous commit to avoid pileup..."
+            git commit --amend -m "Update github-metrics - [skip metrics]"
+            git push --force-with-lease origin ${{ github.ref_name }}
+            echo "Force pushed amended commit"
+          else
+            echo "Creating new commit..."
+            git commit -m "Update github-metrics - [skip metrics]"
+            git push origin ${{ github.ref_name }}
+            echo "Pushed new commit"
           fi
