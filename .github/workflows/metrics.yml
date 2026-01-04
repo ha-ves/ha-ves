@@ -150,9 +150,16 @@ jobs:
             exit 0
           fi
           
-          ## Configure git
-          # git config --local user.email "action@github.com"
-          # git config --local user.name "github-actions[bot]"
+          # Configure git identity for the commit (so commits have a proper author)
+          git config --local user.email "action@github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # If a METRICS_TOKEN secret is provided, update origin to use it for authentication.
+          # We do not echo the token or the URL (token is masked by Actions).
+          METRICS_TOKEN="${{ secrets.METRICS_TOKEN }}"
+          if [ -n "$METRICS_TOKEN" ]; then
+            git remote set-url origin "https://x-access-token:${METRICS_TOKEN}@github.com/${{ github.repository }}.git"
+          fi
           
           # Stage all changes (including new/untracked files)
           git add --all
