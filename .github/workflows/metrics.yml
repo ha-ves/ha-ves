@@ -125,18 +125,27 @@ jobs:
       - name: Move metrics output and check for changes
         if: steps.check_skip.outputs.skip != 'true'
         run: |
-          set +e
-          
-          # Move files from /metrics_renders to repo root
-          if [ -d /metrics_renders ]; then
-            sudo mv /metrics_renders/* ./
-            echo "Moved metrics outputs from /metrics_renders"
+          # Copy files (including dotfiles) from /metrics_renders into the repository root.
+          # cp -a preserves attributes and copies hidden files when using "/. ."
+          if [ -d /metrics_renders ] && [ "$(ls -A /metrics_renders 2>/dev/null)" ]; then
+            cp -a /metrics_renders/. ./
+            echo "Copied metrics outputs from /metrics_renders"
           else
-            echo "/metrics_renders directory not found"
+            echo "/metrics_renders directory not found or empty"
           fi
           
-          # Check if there are changes
-          if git diff --quiet; then
+          # Capture and print porcelain status for debugging / visibility
+          PORCELAIN=$(git status --porcelain)
+          echo "---- git status --porcelain output ----"
+          if [ -z "$PORCELAIN" ]; then
+            echo "(no changes)"
+          else
+            printf '%s\n' "$PORCELAIN"
+          fi
+          echo "---- end porcelain output ----"
+          
+          # Detect any changes (including untracked files). Use porcelain for scripting.
+          if [ -z "$PORCELAIN" ]; then
             echo "No changes detected, skipping commit"
             exit 0
           fi
@@ -145,7 +154,7 @@ jobs:
           # git config --local user.email "action@github.com"
           # git config --local user.name "github-actions[bot]"
           
-          # Add and commit changes
+          # Stage all changes (including new/untracked files)
           git add --all
           
           if [ "${{ steps.check_last_commit.outputs.force_push }}" = "true" ]; then
