@@ -53,12 +53,12 @@ jobs:
           
           # Get all repositories for the authenticated user that are forks
           echo "Fetching forked repositories..."
-          forks=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/user/repos?per_page=100&type=owner&affiliation=owner" | \
-            jq -r '.[] | select(.fork == true) | {name: .full_name, parent: .parent.full_name, default_branch: .default_branch, owner: .owner.login, repo_name: .name}')
+            jq -r '.[] | select(.fork == true) | [.full_name, .parent.full_name, .default_branch] | @tsv' > /tmp/forks.txt
           
-          fork_count=$(echo "$forks" | jq -s 'length')
+          fork_count=$(wc -l < /tmp/forks.txt | tr -d ' ')
           
           if [ "$fork_count" -eq 0 ]; then
             echo "No forks found."
@@ -70,14 +70,8 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Process each fork
-          echo "$forks" | jq -c '.' | while IFS= read -r fork; do
-            fork_name=$(echo "$fork" | jq -r '.name')
-            parent_name=$(echo "$fork" | jq -r '.parent')
-            default_branch=$(echo "$fork" | jq -r '.default_branch')
-            owner=$(echo "$fork" | jq -r '.owner')
-            repo_name=$(echo "$fork" | jq -r '.repo_name')
-            
+          # Process each fork (using while read to preserve counter variables)
+          while IFS=$'\t' read -r fork_name parent_name default_branch; do
             echo ""
             echo "Processing fork: $fork_name (parent: $parent_name, branch: $default_branch)"
             
@@ -167,7 +161,7 @@ jobs:
                 failed_count=$((failed_count + 1))
               fi
             fi
-          done
+          done < /tmp/forks.txt
           
           # Add summary to job summary
           echo "---" >> $GITHUB_STEP_SUMMARY
