@@ -45,6 +45,11 @@ jobs:
           failed_count=0
           no_changes_count=0
           
+          # Function to escape HTML special characters
+          html_escape() {
+            echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
+          }
+          
           # Initialize job summary
           echo "# Fork Update Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -135,13 +140,16 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               
               # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
+              error_msg_esc=$(html_escape "$error_msg")
               cat >> /tmp/email_report.html << EOF
               <div class="fork-item error">
-                <div class="fork-name">❌ $fork_name</div>
+                <div class="fork-name">❌ $fork_name_esc</div>
                 <span class="fork-status status-failed">Failed</span>
                 <div class="detail"><strong>Status:</strong> Failed to compare with upstream</div>
-                <div class="detail"><strong>Upstream:</strong> $parent_name</div>
-                <div class="detail"><strong>Error:</strong> $error_msg</div>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                <div class="detail"><strong>Error:</strong> $error_msg_esc</div>
               </div>
           EOF
               
@@ -171,12 +179,14 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               
               # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
               cat >> /tmp/email_report.html << EOF
               <div class="fork-item warning">
-                <div class="fork-name">⚠️ $fork_name</div>
+                <div class="fork-name">⚠️ $fork_name_esc</div>
                 <span class="fork-status status-skipped">Skipped</span>
                 <div class="detail"><strong>Status:</strong> Skipped (has local commits)</div>
-                <div class="detail"><strong>Upstream:</strong> $parent_name</div>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                 <div class="detail"><strong>Ahead by:</strong> $ahead_by commit(s)</div>
                 <div class="detail"><strong>Behind by:</strong> $behind_by commit(s)</div>
                 <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>
@@ -196,11 +206,13 @@ jobs:
               echo "" >> $GITHUB_STEP_SUMMARY
               
               # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
               cat >> /tmp/email_report.html << EOF
               <div class="fork-item info">
-                <div class="fork-name">✅ $fork_name</div>
+                <div class="fork-name">✅ $fork_name_esc</div>
                 <span class="fork-status status-uptodate">Up to date</span>
-                <div class="detail"><strong>Upstream:</strong> $parent_name</div>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
               </div>
           EOF
               
@@ -234,14 +246,17 @@ jobs:
                 echo "" >> $GITHUB_STEP_SUMMARY
                 
                 # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                merge_type_esc=$(html_escape "$merge_type")
                 cat >> /tmp/email_report.html << EOF
                 <div class="fork-item success">
-                  <div class="fork-name">✅ $fork_name</div>
+                  <div class="fork-name">✅ $fork_name_esc</div>
                   <span class="fork-status status-updated">Updated</span>
                   <div class="detail"><strong>Status:</strong> Successfully updated</div>
-                  <div class="detail"><strong>Upstream:</strong> $parent_name</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                   <div class="detail"><strong>Commits synced:</strong> $behind_by</div>
-                  <div class="detail"><strong>Merge type:</strong> $merge_type</div>
+                  <div class="detail"><strong>Merge type:</strong> $merge_type_esc</div>
                 </div>
           EOF
                 
@@ -262,13 +277,16 @@ jobs:
                 echo "" >> $GITHUB_STEP_SUMMARY
                 
                 # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                message_esc=$(html_escape "$message")
                 cat >> /tmp/email_report.html << EOF
                 <div class="fork-item warning">
-                  <div class="fork-name">⚠️ $fork_name</div>
+                  <div class="fork-name">⚠️ $fork_name_esc</div>
                   <span class="fork-status status-skipped">Merge conflict</span>
                   <div class="detail"><strong>Status:</strong> Merge conflict</div>
-                  <div class="detail"><strong>Upstream:</strong> $parent_name</div>
-                  <div class="detail"><strong>Error:</strong> $message</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                  <div class="detail"><strong>Error:</strong> $message_esc</div>
                   <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>
                 </div>
           EOF
@@ -288,13 +306,16 @@ jobs:
                 echo "" >> $GITHUB_STEP_SUMMARY
                 
                 # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                message_esc=$(html_escape "$message")
                 cat >> /tmp/email_report.html << EOF
                 <div class="fork-item error">
-                  <div class="fork-name">❌ $fork_name</div>
+                  <div class="fork-name">❌ $fork_name_esc</div>
                   <span class="fork-status status-failed">Failed</span>
                   <div class="detail"><strong>Status:</strong> Failed</div>
-                  <div class="detail"><strong>Upstream:</strong> $parent_name</div>
-                  <div class="detail"><strong>Error:</strong> $message (HTTP $http_code)</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                  <div class="detail"><strong>Error:</strong> $message_esc (HTTP $http_code)</div>
                 </div>
           EOF
                 
@@ -362,6 +383,13 @@ jobs:
             exit 0
           fi
           
+          # Sanitize email configuration values (remove newlines and special chars)
+          SMTP_HOST_CLEAN=$(echo "$SMTP_HOST" | tr -d '\n\r' | tr -cd '[:alnum:].-')
+          SMTP_PORT_CLEAN=$(echo "$SMTP_PORT" | tr -d '\n\r' | tr -cd '[:digit:]')
+          EMAIL_FROM_CLEAN=$(echo "$EMAIL_FROM" | tr -d '\n\r' | head -c 254)
+          EMAIL_TO_CLEAN=$(echo "$EMAIL_TO" | tr -d '\n\r' | head -c 254)
+          SMTP_USERNAME_CLEAN=$(echo "$SMTP_USERNAME" | tr -d '\n\r')
+          
           # Install required tools
           sudo apt-get update -qq
           sudo apt-get install -y -qq msmtp msmtp-mta mailutils
@@ -375,26 +403,27 @@ jobs:
           logfile        ~/.msmtp.log
           
           account        default
-          host           $SMTP_HOST
-          port           $SMTP_PORT
-          from           $EMAIL_FROM
-          user           $SMTP_USERNAME
+          host           $SMTP_HOST_CLEAN
+          port           $SMTP_PORT_CLEAN
+          from           $EMAIL_FROM_CLEAN
+          user           $SMTP_USERNAME_CLEAN
           password       $SMTP_PASSWORD
           EOF
           
           chmod 600 ~/.msmtprc
           
-          # Prepare email content
-          subject="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
+          # Prepare email content (sanitize subject line to prevent header injection)
+          subject_raw="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
+          subject=$(echo "$subject_raw" | tr -d '\n\r' | head -c 200)
           
           # Create email with HTML content
           (
-            echo "To: $EMAIL_TO"
-            echo "From: $EMAIL_FROM"
+            echo "To: $EMAIL_TO_CLEAN"
+            echo "From: $EMAIL_FROM_CLEAN"
             echo "Subject: $subject"
             echo "Content-Type: text/html; charset=UTF-8"
             echo ""
             cat /tmp/email_report.html
           ) | msmtp -t
           
-          echo "✅ Email notification sent successfully to: $EMAIL_TO"
+          echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
