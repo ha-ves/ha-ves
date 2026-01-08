@@ -8,339 +8,181 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
-  update-forks:
+  determine-runner:
+    name: Determine runner (self-hosted or fallback)
     runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.set-runner.outputs.use-runner }}
+    steps:
+      - name: Determine which runner to use
+        id: set-runner
+        uses: mikehardy/runner-fallback-action@v1
+        with:
+          # Prefer your self-hosted runner label(s); change if you use custom labels
+          primary-runner: "self-hosted"
+          # Fallback to GitHub-hosted if self-hosted is unavailable
+          fallback-runner: "ubuntu-latest"
+          # Must have org:admin permissions, GitHub runner APIs require it
+          github-token: ${{ secrets.METRICS_TOKEN }}
+
+  update-forks:
+    needs: determine-runner
+    runs-on: ${{ fromJson(needs.determine-runner.outputs.runner) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "action@github.com"
-
-      - name: Get list of user repositories
-        id: get-repos
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Fetching repositories for user..."
-          
-          # Get all repositories for the authenticated user that are forks
-          repos=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/user/repos?per_page=100&type=owner" | \
-            jq -r '.[] | select(.fork == true) | "\(.full_name)|\(.parent.full_name)"')
-          
-          echo "Found forks:"
-          echo "$repos"
-          
-          # Save to file for processing
-          echo "$repos" > /tmp/forks.txt
-          
-          # Count forks
-          fork_count=$(echo "$repos" | grep -v '^$' | wc -l)
-          echo "fork_count=$fork_count" >> $GITHUB_OUTPUT
 
       - name: Process forks and update
         id: process-forks
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Initialize report file
-          report_file="/tmp/update_report.html"
-          
-          cat > "$report_file" << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="UTF-8">
-            <style>
-              body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-              h1 { color: #333; }
-              h2 { color: #0366d6; margin-top: 20px; }
-              .summary { background: #fff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-              .fork-section { background: #fff; padding: 15px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #0366d6; }
-              .success { border-left-color: #28a745; }
-              .warning { border-left-color: #ffa500; }
-              .error { border-left-color: #dc3545; }
-              .info { border-left-color: #6c757d; }
-              details { margin: 10px 0; }
-              summary { cursor: pointer; font-weight: bold; padding: 10px; background: #f6f8fa; border-radius: 3px; }
-              summary:hover { background: #e1e4e8; }
-              .status { font-weight: bold; padding: 5px 10px; border-radius: 3px; display: inline-block; }
-              .status.updated { background: #d4edda; color: #155724; }
-              .status.skipped { background: #fff3cd; color: #856404; }
-              .status.failed { background: #f8d7da; color: #721c24; }
-              .status.no-changes { background: #d1ecf1; color: #0c5460; }
-              pre { background: #f6f8fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
-              code { background: #f6f8fa; padding: 2px 5px; border-radius: 3px; }
-              .timestamp { color: #6c757d; font-size: 0.9em; }
-            </style>
-          </head>
-          <body>
-            <h1>Fork Update Report</h1>
-            <div class="summary">
-              <p class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</p>
-              <p>Workflow Run: <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">${{ github.run_id }}</a></p>
-          EOF
-          
+          # Initialize counters
           updated_count=0
           skipped_count=0
           failed_count=0
           no_changes_count=0
           
-          # Read forks from file
-          while IFS='|' read -r fork_name parent_name; do
-            if [ -z "$fork_name" ] || [ -z "$parent_name" ]; then
-              continue
-            fi
+          # Initialize job summary
+          echo "# Fork Update Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get all repositories for the authenticated user that are forks
+          echo "Fetching forked repositories..."
+          forks=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/user/repos?per_page=100&type=owner&affiliation=owner" | \
+            jq -r '.[] | select(.fork == true) | {name: .full_name, parent: .parent.full_name, default_branch: .default_branch, owner: .owner.login, repo_name: .name}')
+          
+          fork_count=$(echo "$forks" | jq -s 'length')
+          
+          if [ "$fork_count" -eq 0 ]; then
+            echo "No forks found."
+            echo "**No forks found.**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          
+          echo "Found $fork_count fork(s)"
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Process each fork
+          echo "$forks" | jq -c '.' | while IFS= read -r fork; do
+            fork_name=$(echo "$fork" | jq -r '.name')
+            parent_name=$(echo "$fork" | jq -r '.parent')
+            default_branch=$(echo "$fork" | jq -r '.default_branch')
+            owner=$(echo "$fork" | jq -r '.owner')
+            repo_name=$(echo "$fork" | jq -r '.repo_name')
             
-            echo "Processing fork: $fork_name (parent: $parent_name)"
+            echo ""
+            echo "Processing fork: $fork_name (parent: $parent_name, branch: $default_branch)"
             
-            # Create a temporary directory for cloning (use unique name to avoid collisions)
-            temp_dir="/tmp/fork_$(echo $fork_name | md5sum | cut -d' ' -f1)"
-            rm -rf "$temp_dir"
-            mkdir -p "$temp_dir"
+            # Check if fork is ahead of upstream using GitHub API
+            compare_url="https://api.github.com/repos/$fork_name/compare/$parent_name:$default_branch...$default_branch"
+            compare_result=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "$compare_url")
             
-            fork_status="unknown"
-            fork_message=""
-            fork_details=""
+            ahead_by=$(echo "$compare_result" | jq -r '.ahead_by // 0')
+            behind_by=$(echo "$compare_result" | jq -r '.behind_by // 0')
+            status=$(echo "$compare_result" | jq -r '.status // "unknown"')
             
-            # Clone the fork (use quiet mode to avoid token in logs)
-            if GIT_TERMINAL_PROMPT=0 git clone -q "https://x-access-token:$GITHUB_TOKEN@github.com/$fork_name.git" "$temp_dir" 2>&1 | grep -v "x-access-token"; then
-              cd "$temp_dir"
+            echo "  Status: $status, Ahead: $ahead_by, Behind: $behind_by"
+            
+            if [ "$ahead_by" -gt 0 ]; then
+              # Fork has local commits - skip with warning
+              echo "::warning::$fork_name has $ahead_by commit(s) ahead of upstream. Manual intervention required."
+              echo "## ⚠️ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Skipped (has local commits)" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "**Ahead by:** $ahead_by commit(s)" >> $GITHUB_STEP_SUMMARY
+              echo "**Behind by:** $behind_by commit(s)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Action Required:** This fork has local commits. You need to manually merge or rebase." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              skipped_count=$((skipped_count + 1))
+            elif [ "$behind_by" -eq 0 ]; then
+              # Already up to date
+              echo "  ✓ Already up to date"
+              echo "## ✅ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Up to date" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              no_changes_count=$((no_changes_count + 1))
+            else
+              # Fork is behind - try to sync using GitHub API
+              echo "  Attempting to sync fork (behind by $behind_by commits)..."
               
-              # Get default branch (with fallback to main/master)
-              default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || git branch -r | grep -o 'origin/main\|origin/master' | head -1 | sed 's@origin/@@' || echo "main")
+              # Use GitHub's merge upstream API endpoint
+              sync_result=$(curl -s -w "\n%{http_code}" -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$fork_name/merge-upstream" \
+                -d "{\"branch\":\"$default_branch\"}")
               
-              # Add upstream remote
-              git remote add upstream "https://github.com/$parent_name.git"
-              git fetch upstream 2>&1
+              http_code=$(echo "$sync_result" | tail -n1)
+              response_body=$(echo "$sync_result" | sed '$d')
               
-              # Check if there are local commits (verify branches exist first)
-              if git rev-parse --verify upstream/$default_branch >/dev/null 2>&1 && git rev-parse --verify $default_branch >/dev/null 2>&1; then
-                local_commits=$(git log upstream/$default_branch..$default_branch --oneline 2>/dev/null || echo "")
-              else
-                local_commits=""
-              fi
-              
-              if [ -n "$local_commits" ]; then
-                # Fork has local changes
-                fork_status="skipped"
-                fork_message="Fork has local commits. Manual intervention required."
-                fork_details="<details><summary>Local commits found</summary><pre>$local_commits</pre></details>"
-                fork_details="${fork_details}<p><strong>Recommendation:</strong> Review the local commits and decide whether to:</p>"
-                fork_details="${fork_details}<ul><li>Merge upstream changes (may cause conflicts)</li>"
-                fork_details="${fork_details}<li>Rebase onto upstream (rewrites history)</li>"
-                fork_details="${fork_details}<li>Keep fork as-is</li></ul>"
-                fork_details="${fork_details}<p>To update manually, run:</p>"
-                fork_details="${fork_details}<pre>git clone https://github.com/$fork_name.git\ncd $(basename $fork_name)\n"
-                fork_details="${fork_details}git remote add upstream https://github.com/$parent_name.git\n"
-                fork_details="${fork_details}git fetch upstream\ngit merge upstream/$default_branch  # or use rebase</pre>"
+              if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ] || [ "$http_code" -eq 204 ]; then
+                # Success
+                merge_type=$(echo "$response_body" | jq -r '.merge_type // "fast-forward"')
+                echo "  ✓ Successfully synced fork ($merge_type)"
+                echo "## ✅ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Successfully updated" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Commits synced:** $behind_by" >> $GITHUB_STEP_SUMMARY
+                echo "**Merge type:** $merge_type" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                updated_count=$((updated_count + 1))
+              elif [ "$http_code" -eq 409 ]; then
+                # Conflict detected
+                message=$(echo "$response_body" | jq -r '.message // "Merge conflict"')
+                echo "::warning::$fork_name cannot be auto-merged: $message"
+                echo "## ⚠️ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Merge conflict" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Error:** $message" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Action Required:** Manual merge required due to conflicts." >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
                 skipped_count=$((skipped_count + 1))
               else
-                # Check if upstream has changes
-                git fetch upstream "$default_branch" 2>&1
-                # Verify branches exist and have common history before comparing
-                if git rev-parse --verify $default_branch >/dev/null 2>&1 && git rev-parse --verify upstream/$default_branch >/dev/null 2>&1; then
-                  upstream_commits=$(git log $default_branch..upstream/$default_branch --oneline 2>/dev/null || echo "")
-                else
-                  upstream_commits=""
-                fi
-                
-                if [ -z "$upstream_commits" ]; then
-                  # No changes from upstream
-                  fork_status="no-changes"
-                  fork_message="Fork is already up to date with upstream."
-                  no_changes_count=$((no_changes_count + 1))
-                else
-                  # Try to update the fork
-                  if git merge upstream/$default_branch --ff-only > /tmp/merge_output.txt 2>&1; then
-                    # Push the changes
-                    if git push origin $default_branch > /tmp/push_output.txt 2>&1; then
-                      fork_status="updated"
-                      fork_message="Successfully updated fork with upstream changes."
-                      fork_details="<details><summary>Upstream commits merged</summary><pre>$upstream_commits</pre></details>"
-                      updated_count=$((updated_count + 1))
-                    else
-                      fork_status="failed"
-                      fork_message="Failed to push updates to fork."
-                      push_error=$(cat /tmp/push_output.txt)
-                      fork_details="<details><summary>Push error</summary><pre>$push_error</pre></details>"
-                      failed_count=$((failed_count + 1))
-                    fi
-                  else
-                    fork_status="failed"
-                    fork_message="Failed to merge upstream changes."
-                    merge_error=$(cat /tmp/merge_output.txt)
-                    fork_details="<details><summary>Merge error</summary><pre>$merge_error</pre></details>"
-                    failed_count=$((failed_count + 1))
-                  fi
-                fi
+                # Other error
+                message=$(echo "$response_body" | jq -r '.message // "Unknown error"')
+                echo "::error::Failed to sync $fork_name: $message (HTTP $http_code)"
+                echo "## ❌ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Failed" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Error:** $message (HTTP $http_code)" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                failed_count=$((failed_count + 1))
               fi
-              
-              cd /tmp
-              rm -rf "$temp_dir"
-            else
-              fork_status="failed"
-              fork_message="Failed to clone fork repository."
-              failed_count=$((failed_count + 1))
             fi
-            
-            # Add to report
-            status_class=""
-            case "$fork_status" in
-              "updated") status_class="success" ;;
-              "skipped") status_class="warning" ;;
-              "failed") status_class="error" ;;
-              "no-changes") status_class="info" ;;
-            esac
-            
-            cat >> "$report_file" << EOF
-            <div class="fork-section $status_class">
-              <h2>$fork_name</h2>
-              <p><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name</a></p>
-              <p><span class="status $fork_status">$fork_status</span> $fork_message</p>
-              $fork_details
-            </div>
-          EOF
-            
-          done < /tmp/forks.txt
+          done
           
-          # Complete the report
-          cat >> "$report_file" << EOF
-              <p><strong>Total Forks Processed:</strong> ${{ steps.get-repos.outputs.fork_count }}</p>
-              <p><strong>Updated:</strong> $updated_count</p>
-              <p><strong>Skipped (local changes):</strong> $skipped_count</p>
-              <p><strong>No changes:</strong> $no_changes_count</p>
-              <p><strong>Failed:</strong> $failed_count</p>
-            </div>
-            <hr>
-            <p class="timestamp">End of report</p>
-          </body>
-          </html>
-          EOF
-          
-          echo "Report generated at: $report_file"
-          cat "$report_file"
+          # Add summary to job summary
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Forks:** $fork_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Updated:** $updated_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skipped (local changes/conflicts):** $skipped_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Already up to date:** $no_changes_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed:** $failed_count" >> $GITHUB_STEP_SUMMARY
           
           # Set outputs
           echo "updated_count=$updated_count" >> $GITHUB_OUTPUT
           echo "skipped_count=$skipped_count" >> $GITHUB_OUTPUT
           echo "failed_count=$failed_count" >> $GITHUB_OUTPUT
           echo "no_changes_count=$no_changes_count" >> $GITHUB_OUTPUT
-          echo "total_count=${{ steps.get-repos.outputs.fork_count }}" >> $GITHUB_OUTPUT
-
-      - name: Send email notification (SMTP)
-        if: always()
-        env:
-          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
-        run: |
-          # Check if SMTP credentials are configured
-          if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
-            echo "⚠️ SMTP credentials not configured. Skipping email notification."
-            echo "To enable email notifications, set the following secrets:"
-            echo "  - SMTP_USERNAME (required)"
-            echo "  - SMTP_PASSWORD (required)"
-            echo "  - SMTP_HOST (optional, defaults to smtp.gmail.com)"
-            echo "  - SMTP_PORT (optional, defaults to 587)"
-            echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)"
-            echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)"
-            exit 0
-          fi
-          
-          # Install required tools
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq msmtp msmtp-mta mailutils
-          
-          # Configure msmtp
-          cat > ~/.msmtprc << EOF
-          defaults
-          auth           on
-          tls            on
-          tls_trust_file /etc/ssl/certs/ca-certificates.crt
-          logfile        ~/.msmtp.log
-          
-          account        default
-          host           $SMTP_HOST
-          port           $SMTP_PORT
-          from           $EMAIL_FROM
-          user           $SMTP_USERNAME
-          password       $SMTP_PASSWORD
-          EOF
-          
-          chmod 600 ~/.msmtprc
-          
-          # Prepare email content
-          subject="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
-          
-          # Create email with HTML content
-          (
-            echo "To: $EMAIL_TO"
-            echo "From: $EMAIL_FROM"
-            echo "Subject: $subject"
-            echo "Content-Type: text/html; charset=UTF-8"
-            echo ""
-            cat /tmp/update_report.html
-          ) | msmtp -t
-          
-          echo "✅ Email notification sent successfully to: $EMAIL_TO"
-
-      - name: Create GitHub Issue with Report (Fallback notification)
-        if: failure() || (always() && (secrets.SMTP_USERNAME == '' || secrets.SMTP_PASSWORD == ''))
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Read the HTML report
-          report_content=$(cat /tmp/update_report.html)
-          
-          # Create an issue with the report
-          issue_title="Fork Update Report - $(date -u '+%Y-%m-%d')"
-          issue_body="## Fork Update Report
-
-          This is an automated report from the fork update workflow.
-
-          **Run ID:** [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          **Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-
-          ### Summary
-          - **Total Forks:** ${{ steps.process-forks.outputs.total_count }}
-          - **Updated:** ${{ steps.process-forks.outputs.updated_count }}
-          - **Skipped (local changes):** ${{ steps.process-forks.outputs.skipped_count }}
-          - **No changes:** ${{ steps.process-forks.outputs.no_changes_count }}
-          - **Failed:** ${{ steps.process-forks.outputs.failed_count }}
-
-          ### Full HTML Report
-          The full HTML report has been generated. View the workflow logs for the complete report.
-
-          <details>
-          <summary>View HTML Report</summary>
-
-          \`\`\`html
-          $report_content
-          \`\`\`
-          </details>
-
-          ---
-          *This issue was automatically created by the Update Forks workflow.*
-          "
-          
-          # Create the issue using GitHub API
-          curl -X POST \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/issues" \
-            -d "$(jq -n \
-              --arg title "$issue_title" \
-              --arg body "$issue_body" \
-              '{title: $title, body: $body, labels: ["automation", "fork-update"]}')"
-          
-          echo "✅ Created GitHub issue with report as fallback notification"
+          echo "total_count=$fork_count" >> $GITHUB_OUTPUT
