@@ -1,0 +1,337 @@
+name: Update Forks
+on:
+  # Schedule updates weekly (every Monday at 00:00 UTC)
+  schedule:
+    - cron: "0 0 * * 1"
+  # Allow manual triggering
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update-forks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "action@github.com"
+
+      - name: Get list of user repositories
+        id: get-repos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching repositories for user..."
+          
+          # Get all repositories for the authenticated user that are forks
+          repos=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/user/repos?per_page=100&type=owner" | \
+            jq -r '.[] | select(.fork == true) | "\(.full_name)|\(.parent.full_name)"')
+          
+          echo "Found forks:"
+          echo "$repos"
+          
+          # Save to file for processing
+          echo "$repos" > /tmp/forks.txt
+          
+          # Count forks
+          fork_count=$(echo "$repos" | grep -v '^$' | wc -l)
+          echo "fork_count=$fork_count" >> $GITHUB_OUTPUT
+
+      - name: Process forks and update
+        id: process-forks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Initialize report file
+          report_file="/tmp/update_report.html"
+          
+          cat > "$report_file" << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+              h1 { color: #333; }
+              h2 { color: #0366d6; margin-top: 20px; }
+              .summary { background: #fff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+              .fork-section { background: #fff; padding: 15px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #0366d6; }
+              .success { border-left-color: #28a745; }
+              .warning { border-left-color: #ffa500; }
+              .error { border-left-color: #dc3545; }
+              .info { border-left-color: #6c757d; }
+              details { margin: 10px 0; }
+              summary { cursor: pointer; font-weight: bold; padding: 10px; background: #f6f8fa; border-radius: 3px; }
+              summary:hover { background: #e1e4e8; }
+              .status { font-weight: bold; padding: 5px 10px; border-radius: 3px; display: inline-block; }
+              .status.updated { background: #d4edda; color: #155724; }
+              .status.skipped { background: #fff3cd; color: #856404; }
+              .status.failed { background: #f8d7da; color: #721c24; }
+              .status.no-changes { background: #d1ecf1; color: #0c5460; }
+              pre { background: #f6f8fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+              code { background: #f6f8fa; padding: 2px 5px; border-radius: 3px; }
+              .timestamp { color: #6c757d; font-size: 0.9em; }
+            </style>
+          </head>
+          <body>
+            <h1>Fork Update Report</h1>
+            <div class="summary">
+              <p class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</p>
+              <p>Workflow Run: <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">${{ github.run_id }}</a></p>
+          EOF
+          
+          updated_count=0
+          skipped_count=0
+          failed_count=0
+          no_changes_count=0
+          
+          # Read forks from file
+          while IFS='|' read -r fork_name parent_name; do
+            if [ -z "$fork_name" ] || [ -z "$parent_name" ]; then
+              continue
+            fi
+            
+            echo "Processing fork: $fork_name (parent: $parent_name)"
+            
+            # Create a temporary directory for cloning
+            temp_dir="/tmp/fork_$(echo $fork_name | tr '/' '_')"
+            rm -rf "$temp_dir"
+            mkdir -p "$temp_dir"
+            
+            fork_status="unknown"
+            fork_message=""
+            fork_details=""
+            
+            # Clone the fork
+            if git clone "https://x-access-token:$GITHUB_TOKEN@github.com/$fork_name.git" "$temp_dir" 2>&1; then
+              cd "$temp_dir"
+              
+              # Get default branch
+              default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+              
+              # Add upstream remote
+              git remote add upstream "https://github.com/$parent_name.git"
+              git fetch upstream 2>&1
+              
+              # Check if there are local commits
+              local_commits=$(git log upstream/$default_branch..$default_branch --oneline 2>&1)
+              
+              if [ -n "$local_commits" ]; then
+                # Fork has local changes
+                fork_status="skipped"
+                fork_message="Fork has local commits. Manual intervention required."
+                fork_details="<details><summary>Local commits found</summary><pre>$local_commits</pre></details>"
+                fork_details="${fork_details}<p><strong>Recommendation:</strong> Review the local commits and decide whether to:</p>"
+                fork_details="${fork_details}<ul><li>Merge upstream changes (may cause conflicts)</li>"
+                fork_details="${fork_details}<li>Rebase onto upstream (rewrites history)</li>"
+                fork_details="${fork_details}<li>Keep fork as-is</li></ul>"
+                fork_details="${fork_details}<p>To update manually, run:</p>"
+                fork_details="${fork_details}<pre>git clone https://github.com/$fork_name.git\ncd $(basename $fork_name)\n"
+                fork_details="${fork_details}git remote add upstream https://github.com/$parent_name.git\n"
+                fork_details="${fork_details}git fetch upstream\ngit merge upstream/$default_branch  # or use rebase</pre>"
+                skipped_count=$((skipped_count + 1))
+              else
+                # Check if upstream has changes
+                git fetch upstream "$default_branch" 2>&1
+                upstream_commits=$(git log $default_branch..upstream/$default_branch --oneline 2>&1)
+                
+                if [ -z "$upstream_commits" ]; then
+                  # No changes from upstream
+                  fork_status="no-changes"
+                  fork_message="Fork is already up to date with upstream."
+                  no_changes_count=$((no_changes_count + 1))
+                else
+                  # Try to update the fork
+                  if git merge upstream/$default_branch --ff-only 2>&1 > /tmp/merge_output.txt; then
+                    # Push the changes
+                    if git push origin $default_branch 2>&1 > /tmp/push_output.txt; then
+                      fork_status="updated"
+                      fork_message="Successfully updated fork with upstream changes."
+                      fork_details="<details><summary>Upstream commits merged</summary><pre>$upstream_commits</pre></details>"
+                      updated_count=$((updated_count + 1))
+                    else
+                      fork_status="failed"
+                      fork_message="Failed to push updates to fork."
+                      push_error=$(cat /tmp/push_output.txt)
+                      fork_details="<details><summary>Push error</summary><pre>$push_error</pre></details>"
+                      failed_count=$((failed_count + 1))
+                    fi
+                  else
+                    fork_status="failed"
+                    fork_message="Failed to merge upstream changes."
+                    merge_error=$(cat /tmp/merge_output.txt)
+                    fork_details="<details><summary>Merge error</summary><pre>$merge_error</pre></details>"
+                    failed_count=$((failed_count + 1))
+                  fi
+                fi
+              fi
+              
+              cd /tmp
+              rm -rf "$temp_dir"
+            else
+              fork_status="failed"
+              fork_message="Failed to clone fork repository."
+              failed_count=$((failed_count + 1))
+            fi
+            
+            # Add to report
+            status_class=""
+            case "$fork_status" in
+              "updated") status_class="success" ;;
+              "skipped") status_class="warning" ;;
+              "failed") status_class="error" ;;
+              "no-changes") status_class="info" ;;
+            esac
+            
+            cat >> "$report_file" << EOF
+            <div class="fork-section $status_class">
+              <h2>$fork_name</h2>
+              <p><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name</a></p>
+              <p><span class="status $fork_status">$fork_status</span> $fork_message</p>
+              $fork_details
+            </div>
+          EOF
+            
+          done < /tmp/forks.txt
+          
+          # Complete the report
+          cat >> "$report_file" << EOF
+              <p><strong>Total Forks Processed:</strong> ${{ steps.get-repos.outputs.fork_count }}</p>
+              <p><strong>Updated:</strong> $updated_count</p>
+              <p><strong>Skipped (local changes):</strong> $skipped_count</p>
+              <p><strong>No changes:</strong> $no_changes_count</p>
+              <p><strong>Failed:</strong> $failed_count</p>
+            </div>
+            <hr>
+            <p class="timestamp">End of report</p>
+          </body>
+          </html>
+          EOF
+          
+          echo "Report generated at: $report_file"
+          cat "$report_file"
+          
+          # Set outputs
+          echo "updated_count=$updated_count" >> $GITHUB_OUTPUT
+          echo "skipped_count=$skipped_count" >> $GITHUB_OUTPUT
+          echo "failed_count=$failed_count" >> $GITHUB_OUTPUT
+          echo "no_changes_count=$no_changes_count" >> $GITHUB_OUTPUT
+          echo "total_count=${{ steps.get-repos.outputs.fork_count }}" >> $GITHUB_OUTPUT
+
+      - name: Send email notification (SMTP)
+        if: always()
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
+        run: |
+          # Check if SMTP credentials are configured
+          if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
+            echo "⚠️ SMTP credentials not configured. Skipping email notification."
+            echo "To enable email notifications, set the following secrets:"
+            echo "  - SMTP_USERNAME (required)"
+            echo "  - SMTP_PASSWORD (required)"
+            echo "  - SMTP_HOST (optional, defaults to smtp.gmail.com)"
+            echo "  - SMTP_PORT (optional, defaults to 587)"
+            echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)"
+            echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)"
+            exit 0
+          fi
+          
+          # Install required tools
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq msmtp msmtp-mta mailutils
+          
+          # Configure msmtp
+          cat > ~/.msmtprc << EOF
+          defaults
+          auth           on
+          tls            on
+          tls_trust_file /etc/ssl/certs/ca-certificates.crt
+          logfile        ~/.msmtp.log
+          
+          account        default
+          host           $SMTP_HOST
+          port           $SMTP_PORT
+          from           $EMAIL_FROM
+          user           $SMTP_USERNAME
+          password       $SMTP_PASSWORD
+          EOF
+          
+          chmod 600 ~/.msmtprc
+          
+          # Prepare email content
+          subject="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
+          
+          # Create email with HTML content
+          (
+            echo "To: $EMAIL_TO"
+            echo "From: $EMAIL_FROM"
+            echo "Subject: $subject"
+            echo "Content-Type: text/html; charset=UTF-8"
+            echo ""
+            cat /tmp/update_report.html
+          ) | msmtp -t
+          
+          echo "✅ Email notification sent successfully to: $EMAIL_TO"
+
+      - name: Create GitHub Issue with Report (Fallback notification)
+        if: failure() || (always() && (secrets.SMTP_USERNAME == '' || secrets.SMTP_PASSWORD == ''))
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Read the HTML report
+          report_content=$(cat /tmp/update_report.html)
+          
+          # Create an issue with the report
+          issue_title="Fork Update Report - $(date -u '+%Y-%m-%d')"
+          issue_body="## Fork Update Report
+
+          This is an automated report from the fork update workflow.
+
+          **Run ID:** [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          ### Summary
+          - **Total Forks:** ${{ steps.process-forks.outputs.total_count }}
+          - **Updated:** ${{ steps.process-forks.outputs.updated_count }}
+          - **Skipped (local changes):** ${{ steps.process-forks.outputs.skipped_count }}
+          - **No changes:** ${{ steps.process-forks.outputs.no_changes_count }}
+          - **Failed:** ${{ steps.process-forks.outputs.failed_count }}
+
+          ### Full HTML Report
+          The full HTML report has been generated. View the workflow logs for the complete report.
+
+          <details>
+          <summary>View HTML Report</summary>
+
+          \`\`\`html
+          $report_content
+          \`\`\`
+          </details>
+
+          ---
+          *This issue was automatically created by the Update Forks workflow.*
+          "
+          
+          # Create the issue using GitHub API
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues" \
+            -d "$(jq -n \
+              --arg title "$issue_title" \
+              --arg body "$issue_body" \
+              '{title: $title, body: $body, labels: ["automation", "fork-update"]}')"
+          
+          echo "✅ Created GitHub issue with report as fallback notification"
