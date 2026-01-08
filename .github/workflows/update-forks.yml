@@ -53,10 +53,14 @@ jobs:
           
           # Get all repositories for the authenticated user that are forks
           echo "Fetching forked repositories..."
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          if ! curl -s -f -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/user/repos?per_page=100&type=owner&affiliation=owner" | \
-            jq -r '.[] | select(.fork == true) | [.full_name, .parent.full_name, .default_branch] | @tsv' > /tmp/forks.txt
+            jq -r '.[] | select(.fork == true) | [.full_name, .parent.full_name, .default_branch] | @tsv' > /tmp/forks.txt; then
+            echo "::error::Failed to fetch repository list from GitHub API"
+            echo "**Error:** Failed to fetch repositories" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
           
           fork_count=$(wc -l < /tmp/forks.txt | tr -d ' ')
           
@@ -80,6 +84,21 @@ jobs:
             compare_result=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "$compare_url")
+            
+            # Check if API call was successful
+            if echo "$compare_result" | jq -e '.message' >/dev/null 2>&1; then
+              # API returned an error message
+              error_msg=$(echo "$compare_result" | jq -r '.message // "Unknown error"')
+              echo "::error::Failed to compare $fork_name: $error_msg"
+              echo "## ❌ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Failed to compare with upstream" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "**Error:** $error_msg" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              failed_count=$((failed_count + 1))
+              continue
+            fi
             
             ahead_by=$(echo "$compare_result" | jq -r '.ahead_by // 0')
             behind_by=$(echo "$compare_result" | jq -r '.behind_by // 0')
