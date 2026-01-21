@@ -1,21 +1,26 @@
 #!/bin/bash
+set -euo pipefail
 
-if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "Usage: $0 <GITHUB_URL> <GITHUB_TOKEN>"
-    echo "Follow the github runner setup instructions to get the URL and token."
-    exit 1
+# Usage: build_run.sh <RUNNER_URL> <RUNNER_TOKEN> [IMAGE_TAG] [RUNNER_NAME]
+# Example: ./build_run.sh https://github.com/ha-ves/ha-ves mytoken action-runner:latest my-runner
+
+RUNNER_URL="${1:-${RUNNER_URL:-https://github.com/ha-ves/ha-ves}}"
+RUNNER_TOKEN="${2:-${RUNNER_TOKEN:-}}"
+IMAGE_TAG="${3:-action-runner:latest}"
+RUNNER_NAME="${4:-${RUNNER_NAME:-}}"
+
+if [ -z "$RUNNER_TOKEN" ]; then
+        echo "Error: RUNNER_TOKEN is required"
+        echo "Usage: $0 <RUNNER_URL> <RUNNER_TOKEN> [IMAGE_TAG] [RUNNER_NAME]"
+        exit 1
 fi
 
-GITHUB_URL="$1"
-GITHUB_TOKEN="$2"
+echo "Building Docker image: $IMAGE_TAG"
+docker build \
+    --build-arg RUNNER_TOKEN="$RUNNER_TOKEN" \
+    --build-arg RUNNER_URL="$RUNNER_URL" \
+    --build-arg RUNNER_NAME="$RUNNER_NAME" \
+    -t "$IMAGE_TAG" .
 
-echo "Building Docker image..."
-docker build -t actions-runner .
-
-echo "Running container..."
-docker run -d \
-    -e GITHUB_URL="$GITHUB_URL" \
-    -e GITHUB_TOKEN="$GITHUB_TOKEN" \
-    actions-runner
-
-echo "Container started successfully!"
+echo "Build complete. To run the container, use:"
+echo "  docker run -d --name action-runner --restart unless-stopped -v /run/podman/podman.sock:/run/podman/podman.sock $IMAGE_TAG"
