@@ -1,0 +1,429 @@
+name: Update Forks
+on:
+  # Schedule updates weekly (every Monday at 00:00 UTC)
+  schedule:
+    - cron: "0 0 * * 1"
+  # Allow manual triggering
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  determine-runner:
+    name: Determine runner (self-hosted or fallback)
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.set-runner.outputs.use-runner }}
+    steps:
+      - name: Determine which runner to use
+        id: set-runner
+        uses: mikehardy/runner-fallback-action@v1
+        with:
+          # Prefer your self-hosted runner label(s); change if you use custom labels
+          primary-runner: "self-hosted"
+          # Fallback to GitHub-hosted if self-hosted is unavailable
+          fallback-runner: "ubuntu-latest"
+          # Must have org:admin permissions, GitHub runner APIs require it
+          github-token: ${{ secrets.METRICS_TOKEN }}
+
+  update-forks:
+    needs: determine-runner
+    runs-on: ${{ fromJson(needs.determine-runner.outputs.runner) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Process forks and update
+        id: process-forks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Initialize counters
+          updated_count=0
+          skipped_count=0
+          failed_count=0
+          no_changes_count=0
+          
+          # Function to escape HTML special characters
+          html_escape() {
+            echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
+          }
+          
+          # Initialize job summary
+          echo "# Fork Update Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Initialize HTML email report
+          cat > /tmp/email_report.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 20px; background-color: #f6f8fa; line-height: 1.5; }
+              .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+              h1 { color: #24292f; border-bottom: 1px solid #d0d7de; padding-bottom: 10px; }
+              h2 { color: #24292f; margin-top: 24px; font-size: 20px; }
+              .meta { color: #57606a; font-size: 14px; margin-bottom: 20px; }
+              .fork-item { background: #f6f8fa; padding: 16px; margin: 12px 0; border-radius: 6px; border-left: 3px solid #d0d7de; }
+              .fork-item.success { border-left-color: #2da44e; background: #dafbe1; }
+              .fork-item.warning { border-left-color: #fb8500; background: #fff8c5; }
+              .fork-item.error { border-left-color: #cf222e; background: #ffebe9; }
+              .fork-item.info { border-left-color: #0969da; background: #ddf4ff; }
+              .fork-name { font-weight: 600; font-size: 16px; margin-bottom: 8px; }
+              .fork-status { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+              .status-updated { background: #2da44e; color: white; }
+              .status-skipped { background: #fb8500; color: white; }
+              .status-failed { background: #cf222e; color: white; }
+              .status-uptodate { background: #0969da; color: white; }
+              .detail { color: #57606a; font-size: 14px; margin: 4px 0; }
+              .summary { background: #ddf4ff; padding: 16px; border-radius: 6px; margin: 20px 0; border-left: 3px solid #0969da; }
+              .summary-item { margin: 4px 0; }
+              strong { color: #24292f; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>🔄 Fork Update Report</h1>
+              <div class="meta">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</div>
+          EOF
+          
+          # Get all repositories for the authenticated user that are forks
+          echo "Fetching forked repositories..."
+          if ! curl -s -f -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/user/repos?per_page=100&type=owner&affiliation=owner" | \
+            jq -r '.[] | select(.fork == true) | [.full_name, .parent.full_name, .default_branch] | @tsv' > /tmp/forks.txt; then
+            echo "::error::Failed to fetch repository list from GitHub API"
+            echo "**Error:** Failed to fetch repositories" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          fork_count=$(wc -l < /tmp/forks.txt | tr -d ' ')
+          
+          if [ "$fork_count" -eq 0 ]; then
+            echo "No forks found."
+            echo "**No forks found.**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          
+          echo "Found $fork_count fork(s)"
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Process each fork (using while read to preserve counter variables)
+          while IFS=$'\t' read -r fork_name parent_name default_branch; do
+            echo ""
+            echo "Processing fork: $fork_name (parent: $parent_name, branch: $default_branch)"
+            
+            # Check if fork is ahead of upstream using GitHub API
+            compare_url="https://api.github.com/repos/$fork_name/compare/$parent_name:$default_branch...$default_branch"
+            compare_result=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "$compare_url")
+            
+            # Check if API call was successful
+            if echo "$compare_result" | jq -e '.message' >/dev/null 2>&1; then
+              # API returned an error message
+              error_msg=$(echo "$compare_result" | jq -r '.message // "Unknown error"')
+              echo "::error::Failed to compare $fork_name: $error_msg"
+              
+              # Add to job summary
+              echo "## ❌ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Failed to compare with upstream" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "**Error:** $error_msg" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
+              error_msg_esc=$(html_escape "$error_msg")
+              cat >> /tmp/email_report.html << EOF
+              <div class="fork-item error">
+                <div class="fork-name">❌ $fork_name_esc</div>
+                <span class="fork-status status-failed">Failed</span>
+                <div class="detail"><strong>Status:</strong> Failed to compare with upstream</div>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                <div class="detail"><strong>Error:</strong> $error_msg_esc</div>
+              </div>
+          EOF
+              
+              failed_count=$((failed_count + 1))
+              continue
+            fi
+            
+            ahead_by=$(echo "$compare_result" | jq -r '.ahead_by // 0')
+            behind_by=$(echo "$compare_result" | jq -r '.behind_by // 0')
+            status=$(echo "$compare_result" | jq -r '.status // "unknown"')
+            
+            echo "  Status: $status, Ahead: $ahead_by, Behind: $behind_by"
+            
+            if [ "$ahead_by" -gt 0 ]; then
+              # Fork has local commits - skip with warning
+              echo "::warning::$fork_name has $ahead_by commit(s) ahead of upstream. Manual intervention required."
+              
+              # Add to job summary
+              echo "## ⚠️ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Skipped (has local commits)" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "**Ahead by:** $ahead_by commit(s)" >> $GITHUB_STEP_SUMMARY
+              echo "**Behind by:** $behind_by commit(s)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Action Required:** This fork has local commits. You need to manually merge or rebase." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
+              cat >> /tmp/email_report.html << EOF
+              <div class="fork-item warning">
+                <div class="fork-name">⚠️ $fork_name_esc</div>
+                <span class="fork-status status-skipped">Skipped</span>
+                <div class="detail"><strong>Status:</strong> Skipped (has local commits)</div>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                <div class="detail"><strong>Ahead by:</strong> $ahead_by commit(s)</div>
+                <div class="detail"><strong>Behind by:</strong> $behind_by commit(s)</div>
+                <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>
+              </div>
+          EOF
+              
+              skipped_count=$((skipped_count + 1))
+            elif [ "$behind_by" -eq 0 ]; then
+              # Already up to date
+              echo "  ✓ Already up to date"
+              
+              # Add to job summary
+              echo "## ✅ $fork_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Status:** Up to date" >> $GITHUB_STEP_SUMMARY
+              echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Add to email report
+              fork_name_esc=$(html_escape "$fork_name")
+              parent_name_esc=$(html_escape "$parent_name")
+              cat >> /tmp/email_report.html << EOF
+              <div class="fork-item info">
+                <div class="fork-name">✅ $fork_name_esc</div>
+                <span class="fork-status status-uptodate">Up to date</span>
+                <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+              </div>
+          EOF
+              
+              no_changes_count=$((no_changes_count + 1))
+            else
+              # Fork is behind - try to sync using GitHub API
+              echo "  Attempting to sync fork (behind by $behind_by commits)..."
+              
+              # Use GitHub's merge upstream API endpoint
+              sync_result=$(curl -s -w "\n%{http_code}" -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$fork_name/merge-upstream" \
+                -d "{\"branch\":\"$default_branch\"}")
+              
+              http_code=$(echo "$sync_result" | tail -n1)
+              response_body=$(echo "$sync_result" | sed '$d')
+              
+              if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ] || [ "$http_code" -eq 204 ]; then
+                # Success
+                merge_type=$(echo "$response_body" | jq -r '.merge_type // "fast-forward"')
+                echo "  ✓ Successfully synced fork ($merge_type)"
+                
+                # Add to job summary
+                echo "## ✅ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Successfully updated" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Commits synced:** $behind_by" >> $GITHUB_STEP_SUMMARY
+                echo "**Merge type:** $merge_type" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                merge_type_esc=$(html_escape "$merge_type")
+                cat >> /tmp/email_report.html << EOF
+                <div class="fork-item success">
+                  <div class="fork-name">✅ $fork_name_esc</div>
+                  <span class="fork-status status-updated">Updated</span>
+                  <div class="detail"><strong>Status:</strong> Successfully updated</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                  <div class="detail"><strong>Commits synced:</strong> $behind_by</div>
+                  <div class="detail"><strong>Merge type:</strong> $merge_type_esc</div>
+                </div>
+          EOF
+                
+                updated_count=$((updated_count + 1))
+              elif [ "$http_code" -eq 409 ]; then
+                # Conflict detected
+                message=$(echo "$response_body" | jq -r '.message // "Merge conflict"')
+                echo "::warning::$fork_name cannot be auto-merged: $message"
+                
+                # Add to job summary
+                echo "## ⚠️ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Merge conflict" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Error:** $message" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Action Required:** Manual merge required due to conflicts." >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                message_esc=$(html_escape "$message")
+                cat >> /tmp/email_report.html << EOF
+                <div class="fork-item warning">
+                  <div class="fork-name">⚠️ $fork_name_esc</div>
+                  <span class="fork-status status-skipped">Merge conflict</span>
+                  <div class="detail"><strong>Status:</strong> Merge conflict</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                  <div class="detail"><strong>Error:</strong> $message_esc</div>
+                  <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>
+                </div>
+          EOF
+                
+                skipped_count=$((skipped_count + 1))
+              else
+                # Other error
+                message=$(echo "$response_body" | jq -r '.message // "Unknown error"')
+                echo "::error::Failed to sync $fork_name: $message (HTTP $http_code)"
+                
+                # Add to job summary
+                echo "## ❌ $fork_name" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Status:** Failed" >> $GITHUB_STEP_SUMMARY
+                echo "**Upstream:** $parent_name" >> $GITHUB_STEP_SUMMARY
+                echo "**Error:** $message (HTTP $http_code)" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Add to email report
+                fork_name_esc=$(html_escape "$fork_name")
+                parent_name_esc=$(html_escape "$parent_name")
+                message_esc=$(html_escape "$message")
+                cat >> /tmp/email_report.html << EOF
+                <div class="fork-item error">
+                  <div class="fork-name">❌ $fork_name_esc</div>
+                  <span class="fork-status status-failed">Failed</span>
+                  <div class="detail"><strong>Status:</strong> Failed</div>
+                  <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
+                  <div class="detail"><strong>Error:</strong> $message_esc (HTTP $http_code)</div>
+                </div>
+          EOF
+                
+                failed_count=$((failed_count + 1))
+              fi
+            fi
+          done < /tmp/forks.txt
+          
+          # Add summary to job summary
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Forks:** $fork_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Updated:** $updated_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skipped (local changes/conflicts):** $skipped_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Already up to date:** $no_changes_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed:** $failed_count" >> $GITHUB_STEP_SUMMARY
+          
+          # Finalize email report
+          cat >> /tmp/email_report.html << EOF
+              <div class="summary">
+                <h2>Summary</h2>
+                <div class="summary-item"><strong>Total Forks:</strong> $fork_count</div>
+                <div class="summary-item"><strong>✅ Updated:</strong> $updated_count</div>
+                <div class="summary-item"><strong>⚠️ Skipped (local changes/conflicts):</strong> $skipped_count</div>
+                <div class="summary-item"><strong>✅ Already up to date:</strong> $no_changes_count</div>
+                <div class="summary-item"><strong>❌ Failed:</strong> $failed_count</div>
+              </div>
+              <div class="meta">
+                <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run</a>
+              </div>
+            </div>
+          </body>
+          </html>
+          EOF
+          
+          # Set outputs
+          echo "updated_count=$updated_count" >> $GITHUB_OUTPUT
+          echo "skipped_count=$skipped_count" >> $GITHUB_OUTPUT
+          echo "failed_count=$failed_count" >> $GITHUB_OUTPUT
+          echo "no_changes_count=$no_changes_count" >> $GITHUB_OUTPUT
+          echo "total_count=$fork_count" >> $GITHUB_OUTPUT
+
+      - name: Send email notification (SMTP)
+        if: always()
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
+        run: |
+          # Check if SMTP credentials are configured
+          if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
+            echo "⚠️ SMTP credentials not configured. Skipping email notification."
+            echo "To enable email notifications, set the following secrets:"
+            echo "  - SMTP_USERNAME (required)"
+            echo "  - SMTP_PASSWORD (required)"
+            echo "  - SMTP_HOST (optional, defaults to smtp.gmail.com)"
+            echo "  - SMTP_PORT (optional, defaults to 587)"
+            echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)"
+            echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)"
+            exit 0
+          fi
+          
+          # Sanitize email configuration values (remove newlines and special chars)
+          SMTP_HOST_CLEAN=$(echo "$SMTP_HOST" | tr -d '\n\r' | tr -cd '[:alnum:].-')
+          SMTP_PORT_CLEAN=$(echo "$SMTP_PORT" | tr -d '\n\r' | tr -cd '[:digit:]')
+          EMAIL_FROM_CLEAN=$(echo "$EMAIL_FROM" | tr -d '\n\r' | head -c 254)
+          EMAIL_TO_CLEAN=$(echo "$EMAIL_TO" | tr -d '\n\r' | head -c 254)
+          SMTP_USERNAME_CLEAN=$(echo "$SMTP_USERNAME" | tr -d '\n\r')
+          
+          # Install required tools
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq msmtp msmtp-mta mailutils
+          
+          # Configure msmtp
+          cat > ~/.msmtprc << EOF
+          defaults
+          auth           on
+          tls            on
+          tls_trust_file /etc/ssl/certs/ca-certificates.crt
+          logfile        ~/.msmtp.log
+          
+          account        default
+          host           $SMTP_HOST_CLEAN
+          port           $SMTP_PORT_CLEAN
+          from           $EMAIL_FROM_CLEAN
+          user           $SMTP_USERNAME_CLEAN
+          password       $SMTP_PASSWORD
+          EOF
+          
+          chmod 600 ~/.msmtprc
+          
+          # Prepare email content (sanitize subject line to prevent header injection)
+          subject_raw="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
+          subject=$(echo "$subject_raw" | tr -d '\n\r' | head -c 200)
+          
+          # Create email with HTML content
+          (
+            echo "To: $EMAIL_TO_CLEAN"
+            echo "From: $EMAIL_FROM_CLEAN"
+            echo "Subject: $subject"
+            echo "Content-Type: text/html; charset=UTF-8"
+            echo ""
+            cat /tmp/email_report.html
+          ) | msmtp -t
+          
+          echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
