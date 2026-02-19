@@ -37,7 +37,7 @@ jobs:
       - name: Process forks and update
         id: process-forks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
         run: |
           # Initialize counters
           updated_count=0
@@ -93,7 +93,7 @@ jobs:
           
           # Get all repositories for the authenticated user that are forks
           echo "Fetching forked repositories..."
-          if ! curl -s -f -H "Authorization: token $GITHUB_TOKEN" \
+          if ! curl -s -f -H "Authorization: token $METRICS_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/user/repos?per_page=100&type=owner&affiliation=owner" | \
             jq -r '.[] | select(.fork == true) | [.full_name, .parent.full_name, .default_branch] | @tsv' > /tmp/forks.txt; then
@@ -121,7 +121,7 @@ jobs:
             
             # Check if fork is ahead of upstream using GitHub API
             compare_url="https://api.github.com/repos/$fork_name/compare/$parent_name:$default_branch...$default_branch"
-            compare_result=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            compare_result=$(curl -s -H "Authorization: token $METRICS_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "$compare_url")
             
@@ -223,7 +223,7 @@ jobs:
               
               # Use GitHub's merge upstream API endpoint
               sync_result=$(curl -s -w "\n%{http_code}" -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Authorization: token $METRICS_TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
                 "https://api.github.com/repos/$fork_name/merge-upstream" \
                 -d "{\"branch\":\"$default_branch\"}")
