@@ -90,8 +90,7 @@ jobs:
 
           # Fetch forked repositories using gh CLI
           echo "Fetching forked repositories..."
-          OWNER="$(gh api user --jq .login | tr -d '\n')"
-          if ! gh repo list "$OWNER" --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \  
+          if ! gh repo list "${{ github.repository_owner }}" --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \  
             --jq '.[] | [.nameWithOwner, (.parent.owner.login + "/" + .parent.name), .defaultBranchRef.name] | @tsv' \
             > /tmp/forks.txt; then
             echo "::error::Failed to fetch repository list"
