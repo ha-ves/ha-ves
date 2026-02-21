@@ -91,7 +91,7 @@ jobs:
           # Fetch forked repositories using gh CLI
           echo "Fetching forked repositories..."
           if ! gh repo list --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \
-            --jq '.[] | [.nameWithOwner, (.parent.owner.login + "/" + .parent.name), .defaultBranchRef.name] | @tsv' \
+            --jq '.[] | [.nameWithOwner, .parent.owner.login, .parent.name, .defaultBranchRef.name] | @tsv' \
             > /tmp/forks.txt; then
             echo "::error::Failed to fetch repository list"
             echo "**Error:** Failed to fetch repositories" >> $GITHUB_STEP_SUMMARY
@@ -110,12 +110,13 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          while IFS=$'\t' read -r fork_name default_branch; do
+          while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
             echo ""
             echo "Processing fork: $fork_name ($default_branch)"
 
             # Check ahead/behind using gh api
-            compare_result=$(gh api "repos/$fork_name/compare/$parent_name:$default_branch...$default_branch" 2>&1)
+            compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
+            parent_name=parent_owner/parent_repo
             if [ $? -ne 0 ]; then
               error_msg=$(echo "$compare_result" | head -1)
               echo "::error::Failed to compare $fork_name: $error_msg"
