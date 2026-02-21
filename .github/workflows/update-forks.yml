@@ -90,8 +90,8 @@ jobs:
 
           # Fetch forked repositories using gh CLI
           echo "Fetching forked repositories..."
-          if ! gh repo list --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \
-            --jq '.[] | [.nameWithOwner, .parent.nameWithOwner, .defaultBranchRef.name] | @tsv' \
+          if ! gh repo list --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \  
+            --jq '.[] | [.nameWithOwner, (.parent.owner.login + "/" + .parent.name), .defaultBranchRef.name] | @tsv' \
             > /tmp/forks.txt; then
             echo "::error::Failed to fetch repository list"
             echo "**Error:** Failed to fetch repositories" >> $GITHUB_STEP_SUMMARY
@@ -110,9 +110,9 @@ jobs:
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          while IFS=$'\t' read -r fork_name parent_name default_branch; do
+          while IFS=$'\t' read -r fork_name default_branch; do
             echo ""
-            echo "Processing fork: $fork_name (parent: $parent_name, branch: $default_branch)"
+            echo "Processing fork: $fork_name ($default_branch)"
 
             # Check ahead/behind using gh api
             compare_result=$(gh api "repos/$fork_name/compare/$parent_name:$default_branch...$default_branch" 2>&1)
@@ -138,7 +138,7 @@ jobs:
                 <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                 <div class="detail"><strong>Error:</strong> $error_msg_esc</div>
               </div>
-          EOF
+              EOF
 
               failed_count=$((failed_count + 1))
               continue
@@ -174,7 +174,7 @@ jobs:
                 <div class="detail"><strong>Behind by:</strong> $behind_by commit(s)</div>
                 <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>
               </div>
-          EOF
+              EOF
 
               skipped_count=$((skipped_count + 1))
 
@@ -195,7 +195,7 @@ jobs:
                 <span class="fork-status status-uptodate">Up to date</span>
                 <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
               </div>
-          EOF
+              EOF
 
               no_changes_count=$((no_changes_count + 1))
 
@@ -225,7 +225,7 @@ jobs:
                   <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                   <div class="detail"><strong>Commits synced:</strong> $behind_by</div>
                 </div>
-          EOF
+                EOF
 
                 updated_count=$((updated_count + 1))
 
@@ -251,7 +251,7 @@ jobs:
                     <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                     <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>
                   </div>
-          EOF
+                  EOF
 
                   skipped_count=$((skipped_count + 1))
                 else
@@ -276,7 +276,7 @@ jobs:
                     <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                     <div class="detail"><strong>Error:</strong> $message_esc</div>
                   </div>
-          EOF
+                  EOF
 
                   failed_count=$((failed_count + 1))
                 fi
@@ -297,28 +297,17 @@ jobs:
 
           # Finalize email report
           cat >> /tmp/email_report.html << EOF
-              <div class="summary">
-                <h2>Summary</h2>
-                <div class="summary-item"><strong>Total Forks:</strong> $fork_count</div>
-                <div class="summary-item"><strong>✅ Updated:</strong> $updated_count</div>
-                <div class="summary-item"><strong>⚠️ Skipped (local changes/conflicts):</strong> $skipped_count</div>
-                <div class="summary-item"><strong>✅ Already up to date:</strong> $no_changes_count</div>
-                <div class="summary-item"><strong>❌ Failed:</strong> $failed_count</div>
-              </div>
-              <div class="meta">
-                <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run</a>
-              </div>
-            </div>
-          <script>
-            const elem = document.getElementById("generated-utc");
-            const epoch = elem.dataset.epoch;
-            if (epoch) {
-              const date = new Date(parseInt(epoch, 10) * 1000);
-              elem.textContent = date.toString();
-            }
-          </script>
-          </body>
-          </html>
+          <div class="summary">
+            <h2>Summary</h2>
+            <div class="summary-item"><strong>Total Forks:</strong> $fork_count</div>
+            <div class="summary-item"><strong>✅ Updated:</strong> $updated_count</div>
+            <div class="summary-item"><strong>⚠️ Skipped (local changes/conflicts):</strong> $skipped_count</div>
+            <div class="summary-item"><strong>✅ Already up to date:</strong> $no_changes_count</div>
+            <div class="summary-item"><strong>❌ Failed:</strong> $failed_count</div>
+          </div>
+          <div class="meta">
+            <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run</a>
+          </div>
           EOF
 
           # Set outputs
@@ -338,6 +327,20 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
           EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
         run: |
+          cat >> /tmp/email_report.html << EOF
+          </div>
+          <script>
+            const elem = document.getElementById("generated-utc");
+            const epoch = elem.dataset.epoch;
+            if (epoch) {
+              const date = new Date(parseInt(epoch, 10) * 1000);
+              elem.textContent = date.toString();
+            }
+          </script>
+          </body>
+          </html>
+          EOF
+        
           if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
             echo "⚠️ SMTP credentials not configured. Skipping email notification."
             echo "To enable email notifications, set the following secrets:"
