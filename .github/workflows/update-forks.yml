@@ -45,6 +45,9 @@ jobs:
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
           }
 
+          # Enable command tracing for debugging (GH_TOKEN is consumed by gh, not echoed)
+          set -x
+
           # Initialize job summary
           echo "# Fork Update Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -116,8 +119,11 @@ jobs:
 
             # Check ahead/behind using gh api
             parent_name="$parent_owner/$parent_repo"
+            set +e
             compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
-            if [ $? -ne 0 ]; then
+            compare_exit=$?
+            set -e
+            if [ $compare_exit -ne 0 ]; then
               error_msg=$(echo "$compare_result" | head -1)
               echo "::error::Failed to compare $fork_name: $error_msg"
 
@@ -203,8 +209,10 @@ jobs:
             else
               echo "  Attempting to sync fork (behind by $behind_by commits)..."
 
+              set +e
               sync_output=$(gh repo sync "$fork_name" --branch "$default_branch" 2>&1)
               sync_exit=$?
+              set -e
 
               if [ $sync_exit -eq 0 ]; then
                 echo "  ✓ Successfully synced fork"
@@ -386,6 +394,7 @@ jobs:
           subject_raw="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
           subject=$(echo "$subject_raw" | tr -d '\n\r' | head -c 200)
 
+          set +e
           (
             echo "To: $EMAIL_TO_CLEAN"
             echo "From: $EMAIL_FROM_CLEAN"
@@ -395,6 +404,7 @@ jobs:
             cat /tmp/email_report.html
           ) | msmtp -t
           mail_exit=$?
+          set -e
           if [ $mail_exit -eq 0 ]; then
             echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
             echo "✅ Email notification sent successfully to: \`$EMAIL_TO_CLEAN\`" >> $GITHUB_STEP_SUMMARY
