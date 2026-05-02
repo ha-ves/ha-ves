@@ -115,8 +115,8 @@ jobs:
             echo "Processing fork: $fork_name ($default_branch)"
 
             # Check ahead/behind using gh api
+            parent_name="$parent_owner/$parent_repo"
             compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
-            parent_name=parent_owner/parent_repo
             if [ $? -ne 0 ]; then
               error_msg=$(echo "$compare_result" | head -1)
               echo "::error::Failed to compare $fork_name: $error_msg"
@@ -131,7 +131,7 @@ jobs:
               fork_name_esc=$(html_escape "$fork_name")
               parent_name_esc=$(html_escape "$parent_name")
               error_msg_esc=$(html_escape "$error_msg")
-              cat >> /tmp/email_report.html << EOF
+              cat >> /tmp/email_report.html << __HTML__
               <div class="fork-item error">
                 <div class="fork-name">❌ $fork_name_esc</div>
                 <span class="fork-status status-failed">Failed</span>
@@ -139,7 +139,7 @@ jobs:
                 <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                 <div class="detail"><strong>Error:</strong> $error_msg_esc</div>
               </div>
-              EOF
+          __HTML__
 
               failed_count=$((failed_count + 1))
               continue
@@ -165,7 +165,7 @@ jobs:
 
               fork_name_esc=$(html_escape "$fork_name")
               parent_name_esc=$(html_escape "$parent_name")
-              cat >> /tmp/email_report.html << EOF
+              cat >> /tmp/email_report.html << __HTML__
               <div class="fork-item warning">
                 <div class="fork-name">⚠️ $fork_name_esc</div>
                 <span class="fork-status status-skipped">Skipped</span>
@@ -175,7 +175,7 @@ jobs:
                 <div class="detail"><strong>Behind by:</strong> $behind_by commit(s)</div>
                 <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>
               </div>
-              EOF
+          __HTML__
 
               skipped_count=$((skipped_count + 1))
 
@@ -190,13 +190,13 @@ jobs:
 
               fork_name_esc=$(html_escape "$fork_name")
               parent_name_esc=$(html_escape "$parent_name")
-              cat >> /tmp/email_report.html << EOF
+              cat >> /tmp/email_report.html << __HTML__
               <div class="fork-item info">
                 <div class="fork-name">✅ $fork_name_esc</div>
                 <span class="fork-status status-uptodate">Up to date</span>
                 <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
               </div>
-              EOF
+          __HTML__
 
               no_changes_count=$((no_changes_count + 1))
 
@@ -218,7 +218,7 @@ jobs:
 
                 fork_name_esc=$(html_escape "$fork_name")
                 parent_name_esc=$(html_escape "$parent_name")
-                cat >> /tmp/email_report.html << EOF
+                cat >> /tmp/email_report.html << __HTML__
                 <div class="fork-item success">
                   <div class="fork-name">✅ $fork_name_esc</div>
                   <span class="fork-status status-updated">Updated</span>
@@ -226,7 +226,7 @@ jobs:
                   <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                   <div class="detail"><strong>Commits synced:</strong> $behind_by</div>
                 </div>
-                EOF
+          __HTML__
 
                 updated_count=$((updated_count + 1))
 
@@ -244,7 +244,7 @@ jobs:
 
                   fork_name_esc=$(html_escape "$fork_name")
                   parent_name_esc=$(html_escape "$parent_name")
-                  cat >> /tmp/email_report.html << EOF
+                  cat >> /tmp/email_report.html << __HTML__
                   <div class="fork-item warning">
                     <div class="fork-name">⚠️ $fork_name_esc</div>
                     <span class="fork-status status-skipped">Merge conflict</span>
@@ -252,7 +252,7 @@ jobs:
                     <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                     <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>
                   </div>
-                  EOF
+          __HTML__
 
                   skipped_count=$((skipped_count + 1))
                 else
@@ -269,7 +269,7 @@ jobs:
                   fork_name_esc=$(html_escape "$fork_name")
                   parent_name_esc=$(html_escape "$parent_name")
                   message_esc=$(html_escape "$message")
-                  cat >> /tmp/email_report.html << EOF
+                  cat >> /tmp/email_report.html << __HTML__
                   <div class="fork-item error">
                     <div class="fork-name">❌ $fork_name_esc</div>
                     <span class="fork-status status-failed">Failed</span>
@@ -277,7 +277,7 @@ jobs:
                     <div class="detail"><strong>Upstream:</strong> $parent_name_esc</div>
                     <div class="detail"><strong>Error:</strong> $message_esc</div>
                   </div>
-                  EOF
+          __HTML__
 
                   failed_count=$((failed_count + 1))
                 fi
@@ -320,6 +320,7 @@ jobs:
 
       - name: Send email notification (SMTP)
         if: always()
+        continue-on-error: true
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
@@ -328,6 +329,7 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
           EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
         run: |
+          echo "## 📧 Email" >> $GITHUB_STEP_SUMMARY
           cat >> /tmp/email_report.html << EOF
           </div>
           <script>
@@ -351,6 +353,7 @@ jobs:
             echo "  - SMTP_PORT (optional, defaults to 587)"
             echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)"
             echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)"
+            echo "⚠️ Email skipped: SMTP credentials (SMTP_USERNAME / SMTP_PASSWORD) not configured." >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
 
@@ -391,5 +394,11 @@ jobs:
             echo ""
             cat /tmp/email_report.html
           ) | msmtp -t
-
-          echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
+          mail_exit=$?
+          if [ $mail_exit -eq 0 ]; then
+            echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
+            echo "✅ Email notification sent successfully to: \`$EMAIL_TO_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Email notification failed (msmtp exit $mail_exit). Check SMTP_HOST/SMTP_PORT and runner egress rules."
+            echo "⚠️ Email notification failed. Check SMTP_HOST/SMTP_PORT and runner egress rules." >> $GITHUB_STEP_SUMMARY
+          fi
