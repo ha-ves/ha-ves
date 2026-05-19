@@ -17,15 +17,24 @@ if { [ -z "${SMTP_USERNAME:-}" ] || [ -z "${SMTP_PASSWORD:-}" ]; } && { [ -z "${
   echo "    - SMTP_USERNAME (required)" 
   echo "    - SMTP_PASSWORD (required)" 
   echo "  Option B (OAuth/XOAUTH2):" 
-  echo "    - OAUTH_CLIENT_ID" 
-  echo "    - OAUTH_CLIENT_SECRET" 
-  echo "    - OAUTH_REFRESH_TOKEN" 
+  echo "    - OAUTH_CLIENT_ID (required)" 
+  echo "    - OAUTH_CLIENT_SECRET (required)" 
+  echo "    - OAUTH_REFRESH_TOKEN (required)" 
+  echo "    - OAUTH_USER_EMAIL (required, the email authorized for the refresh token)" 
   echo "    - (optional) OAUTH_TOKEN_URL (defaults to https://oauth2.googleapis.com/token)" 
   echo "  - SMTP_HOST (optional, defaults to smtp.gmail.com)" 
   echo "  - SMTP_PORT (optional, defaults to 587)" 
   echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)" 
   echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)" 
   echo "⚠️ Email skipped: no valid credentials provided." >> "$GITHUB_STEP_SUMMARY"
+  exit 0
+fi
+
+# If OAuth is configured, ensure OAUTH_USER_EMAIL is also set
+if [ -n "${OAUTH_CLIENT_ID:-}" ] && [ -n "${OAUTH_CLIENT_SECRET:-}" ] && [ -n "${OAUTH_REFRESH_TOKEN:-}" ] && [ -z "${OAUTH_USER_EMAIL:-}" ]; then
+  echo "⚠️ OAUTH_USER_EMAIL not configured. Skipping email notification."
+  echo "When using OAuth, set OAUTH_USER_EMAIL to the email address authorized for the refresh token."
+  echo "⚠️ Email skipped: OAUTH_USER_EMAIL is required for OAuth." >> "$GITHUB_STEP_SUMMARY"
   exit 0
 fi
 

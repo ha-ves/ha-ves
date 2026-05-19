@@ -62,7 +62,7 @@ def main():
     client_id = client_info.get("client_id")
     client_secret = client_info.get("client_secret")
     refresh_token = creds.refresh_token
-
+    
     print("\n=== OAuth credentials ===")
     print(f"CLIENT_ID={client_id}")
     print(f"CLIENT_SECRET={client_secret}")
@@ -77,7 +77,7 @@ def main():
         "client_secret": client_secret,
         "refresh_token": refresh_token,
     }
-
+    
     if not args.no_write:
         try:
             os.makedirs(os.path.dirname(out_file), exist_ok=True)

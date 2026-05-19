@@ -4,6 +4,7 @@
 Reads the HTML body from /tmp/email_report.html by default and sends via SMTP.
 Environment variables used:
   SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_FROM, EMAIL_TO
+  OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REFRESH_TOKEN, OAUTH_USER_EMAIL, OAUTH_TOKEN_URL
 
 Exits with 0 on success, non-zero on failure.
 """
@@ -35,6 +36,7 @@ def main():
     client_id = os.environ.get("OAUTH_CLIENT_ID") or os.environ.get("CLIENT_ID")
     client_secret = os.environ.get("OAUTH_CLIENT_SECRET") or os.environ.get("CLIENT_SECRET")
     refresh_token = os.environ.get("OAUTH_REFRESH_TOKEN") or os.environ.get("REFRESH_TOKEN")
+    oauth_user = os.environ.get("OAUTH_USER_EMAIL")
     token_url = os.environ.get("OAUTH_TOKEN_URL") or "https://oauth2.googleapis.com/token"
     email_from = os.environ.get("EMAIL_FROM") or smtp_user
     email_to = os.environ.get("EMAIL_TO") or smtp_user
@@ -45,9 +47,13 @@ def main():
         print("⚠️ google-auth is required for OAuth token refresh. Install with 'pip install -r requirements.txt'.")
         return 2
 
+    if use_xoauth2 and not oauth_user:
+        print("⚠️ OAUTH_USER_EMAIL is required when using OAuth. Set this to the email address authorized for the refresh token.")
+        return 2
+
     if not use_xoauth2 and (not smtp_user or not smtp_pass):
         print("⚠️ SMTP credentials not configured. Skipping email notification.")
-        print("Set SMTP_USERNAME and SMTP_PASSWORD, or configure OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN to enable XOAUTH2.")
+        print("Set SMTP_USERNAME and SMTP_PASSWORD, or configure OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN / OAUTH_USER_EMAIL to enable XOAUTH2.")
         return 0
 
     if not os.path.exists("/tmp/email_report.html"):
@@ -95,7 +101,7 @@ def main():
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
                 if use_xoauth2:
-                    auth_string = f"user={email_from}\x01auth=Bearer {access_token}\x01\x01"
+                    auth_string = f"user={oauth_user}\x01auth=Bearer {access_token}\x01\x01"
                     auth_b64 = base64.b64encode(auth_string.encode()).decode()
                     code, resp = server.docmd("AUTH XOAUTH2 " + auth_b64)
                     if code != 235:
@@ -111,7 +117,7 @@ def main():
                 server.starttls(context=ssl.create_default_context())
                 server.ehlo()
                 if use_xoauth2:
-                    auth_string = f"user={email_from}\x01auth=Bearer {access_token}\x01\x01"
+                    auth_string = f"user={oauth_user}\x01auth=Bearer {access_token}\x01\x01"
                     auth_b64 = base64.b64encode(auth_string.encode()).decode()
                     code, resp = server.docmd("AUTH XOAUTH2 " + auth_b64)
                     if code != 235:
