@@ -33,117 +33,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
         run: |
-          echo "# Fork Update Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          cat > /tmp/email_report.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="UTF-8">
-            <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; margin: 20px; background-color: #f6f8fa; line-height: 1.5; }
-              .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
-              h1 { color: #24292f; border-bottom: 1px solid #d0d7de; padding-bottom: 10px; }
-              h2 { color: #24292f; margin-top: 24px; font-size: 20px; }
-              .meta { color: #57606a; font-size: 14px; margin-bottom: 20px; }
-              .fork-item { background: #f6f8fa; padding: 16px; margin: 12px 0; border-radius: 6px; border-left: 3px solid #d0d7de; }
-              .fork-item.success { border-left-color: #2da44e; background: #dafbe1; }
-              .fork-item.warning { border-left-color: #fb8500; background: #fff8c5; }
-              .fork-item.error { border-left-color: #cf222e; background: #ffebe9; }
-              .fork-item.info { border-left-color: #0969da; background: #ddf4ff; }
-              .fork-name { font-weight: 600; font-size: 16px; margin-bottom: 8px; }
-              .fork-status { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
-              .status-updated { background: #2da44e; color: white; }
-              .status-skipped { background: #fb8500; color: white; }
-              .status-failed { background: #cf222e; color: white; }
-              .status-uptodate { background: #0969da; color: white; }
-              .detail { color: #57606a; font-size: 14px; margin: 4px 0; }
-              .summary { background: #ddf4ff; padding: 16px; border-radius: 6px; margin: 20px 0; border-left: 3px solid #0969da; }
-              .summary-item { margin: 4px 0; }
-              strong { color: #24292f; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>🔄 Fork Update Report</h1>
-          HTMLEOF
-
-          printf '%s\n' "      <div class=\"meta\">Generated: <span id=\"generated-utc\" data-epoch=\"$(date -u +%s)\">$(date -u '+%Y-%m-%d %H:%M:%S UTC')</span></div>" >> /tmp/email_report.html
-
-          # Fetch forked repositories using gh CLI
-          echo "Fetching forked repositories..."
-          if ! gh repo list --fork --json nameWithOwner,parent,defaultBranchRef --limit 200 \
-            --jq '.[] | [.nameWithOwner, .parent.owner.login, .parent.name, .defaultBranchRef.name] | @tsv' \
-            > /tmp/forks.txt; then
-            echo "::error::Failed to fetch repository list"
-            echo "**Error:** Failed to fetch repositories" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-
-          fork_count=$(wc -l < /tmp/forks.txt | tr -d ' ')
-          echo "$fork_count" > /tmp/fork_count
-
-          if [ "$fork_count" -eq 0 ]; then
-            echo "No forks found."
-            echo "**No forks found.**" >> $GITHUB_STEP_SUMMARY
-            echo "Found 0 forks"
-          else
-            echo "Found $fork_count fork(s)"
-            echo "---" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          bash .github/scripts/render_header.sh
 
       - name: Process forks
         id: process-forks
         env:
           GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
           SKIP_REPOS: ${{ vars.SKIP_REPOS }}
-        run: .github/scripts/update-forks-report.sh
+        run: |
+          bash .github/scripts/update-forks-report.sh
 
       - name: Finalize fork report
         env:
-          UPDATED_COUNT: ${{ steps.process-forks.outputs.updated_count }}
-          SKIPPED_COUNT: ${{ steps.process-forks.outputs.skipped_count }}
-          FAILED_COUNT: ${{ steps.process-forks.outputs.failed_count }}
-          NO_CHANGES_COUNT: ${{ steps.process-forks.outputs.no_changes_count }}
-          TOTAL_COUNT: ${{ steps.process-forks.outputs.total_count }}
+          TOTAL: ${{ steps.process-forks.outputs.total_count }}
+          UPDATED: ${{ steps.process-forks.outputs.updated_count }}
+          SKIPPED: ${{ steps.process-forks.outputs.skipped_count }}
+          NO_CHANGES: ${{ steps.process-forks.outputs.no_changes_count }}
+          FAILED: ${{ steps.process-forks.outputs.failed_count }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           echo "---" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Total Forks:** $TOTAL_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Updated:** $UPDATED_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skipped (local changes/conflicts):** $SKIPPED_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Already up to date:** $NO_CHANGES_COUNT" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Failed:** $FAILED_COUNT" >> "$GITHUB_STEP_SUMMARY"
-
-          printf '%s\n' \
-            '          <div class="summary">' \
-            '            <h2>Summary</h2>' \
-            "            <div class=\"summary-item\"><strong>Total Forks:</strong> $TOTAL_COUNT</div>" \
-            "            <div class=\"summary-item\"><strong>✅ Updated:</strong> $UPDATED_COUNT</div>" \
-            "            <div class=\"summary-item\"><strong>⚠️ Skipped (local changes/conflicts):</strong> $SKIPPED_COUNT</div>" \
-            "            <div class=\"summary-item\"><strong>✅ Already up to date:</strong> $NO_CHANGES_COUNT</div>" \
-            "            <div class=\"summary-item\"><strong>❌ Failed:</strong> $FAILED_COUNT</div>" \
-            '          </div>' \
-            '          <div class="meta">' \
-            "            <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View workflow run</a>" \
-            '          </div>' \
-            '          </div>' \
-            '<script>' \
-            '  const elem = document.getElementById("generated-utc");' \
-            '  const epoch = elem.dataset.epoch;' \
-            '  if (epoch) {' \
-            '    const date = new Date(parseInt(epoch, 10) * 1000);' \
-            '    elem.textContent = date.toString();' \
-            '  }' \
-            '</script>' \
-            '</body>' \
-            '</html>' >> /tmp/email_report.html
+          bash .github/scripts/render_footer.sh
 
       - name: Send email notification (SMTP)
         if: always()
@@ -176,51 +87,13 @@ jobs:
             echo "⚠️ Email skipped: SMTP credentials (SMTP_USERNAME / SMTP_PASSWORD) not configured." >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
-
-          SMTP_HOST_CLEAN=$(echo "$SMTP_HOST" | tr -d '\n\r' | tr -cd '[:alnum:].-')
-          SMTP_PORT_CLEAN=$(echo "$SMTP_PORT" | tr -d '\n\r' | tr -cd '[:digit:]')
-          EMAIL_FROM_CLEAN=$(echo "$EMAIL_FROM" | tr -d '\n\r' | head -c 254)
-          EMAIL_TO_CLEAN=$(echo "$EMAIL_TO" | tr -d '\n\r' | head -c 254)
-          SMTP_USERNAME_CLEAN=$(echo "$SMTP_USERNAME" | tr -d '\n\r')
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq msmtp msmtp-mta mailutils
-
-          cat > ~/.msmtprc << EOF
-          defaults
-          auth           on
-          tls            on
-          tls_trust_file /etc/ssl/certs/ca-certificates.crt
-          logfile        ~/.msmtp.log
-
-          account        default
-          host           $SMTP_HOST_CLEAN
-          port           $SMTP_PORT_CLEAN
-          from           $EMAIL_FROM_CLEAN
-          user           $SMTP_USERNAME_CLEAN
-          password       $SMTP_PASSWORD
-          EOF
-
-          chmod 600 ~/.msmtprc
-
-          subject_raw="Fork Update Report - ${{ steps.process-forks.outputs.updated_count }} updated, ${{ steps.process-forks.outputs.skipped_count }} skipped"
-          subject=$(echo "$subject_raw" | tr -d '\n\r' | head -c 200)
-
-          set +e
-          (
-            echo "To: $EMAIL_TO_CLEAN"
-            echo "From: $EMAIL_FROM_CLEAN"
-            echo "Subject: $subject"
-            echo "Content-Type: text/html; charset=UTF-8"
-            echo ""
-            cat /tmp/email_report.html
-          ) | msmtp -t
-          mail_exit=$?
-          set -e
-          if [ $mail_exit -eq 0 ]; then
-            echo "✅ Email notification sent successfully to: $EMAIL_TO_CLEAN"
-            echo "✅ Email notification sent successfully to: \`$EMAIL_TO_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          # Use the Python standard-library email sender (no extra packages required)
+          python3 .github/scripts/send_email.py
+          py_exit=$?
+          if [ $py_exit -eq 0 ]; then
+            echo "✅ Email notification sent successfully."
+            echo "✅ Email notification sent successfully." >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ Email notification failed (msmtp exit $mail_exit). Check SMTP_HOST/SMTP_PORT and runner egress rules."
+            echo "⚠️ Email notification failed (python exit $py_exit). Check SMTP settings and runner egress rules."
             echo "⚠️ Email notification failed. Check SMTP_HOST/SMTP_PORT and runner egress rules." >> $GITHUB_STEP_SUMMARY
           fi

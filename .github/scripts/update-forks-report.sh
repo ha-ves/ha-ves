@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
 html_escape() {
   echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
 }
@@ -43,12 +44,13 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
     if [ "$skip_this" = "true" ]; then
       echo "  ⏭ Skipping $fork_name (in SKIP_REPOS)"
       fork_name_esc=$(html_escape "$fork_name")
-      append_html \
-        '                <div class="fork-item warning">' \
-        "                  <div class=\"fork-name\">⏭ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-        '                  <span class="fork-status status-skipped">Skipped</span>' \
-        '                  <div class="detail"><strong>Status:</strong> Skipped (excluded via SKIP_REPOS)</div>' \
-        '                </div>'
+      bash .github/scripts/lib_template.sh ".github/templates/item_warning.html" \
+        FORK_LINK="https://github.com/$fork_name" \
+        FORK_NAME_ESC="$fork_name_esc" \
+        ICON="⏭" \
+        STATUS_TEXT="Skipped" \
+        DETAIL_TEXT="Skipped (excluded via SKIP_REPOS)" \
+        EXTRA=""
       skipped_count=$((skipped_count + 1))
       continue
     fi
@@ -66,14 +68,13 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
     fork_name_esc=$(html_escape "$fork_name")
     parent_name_esc=$(html_escape "$parent_name")
     error_msg_esc=$(html_escape "$error_msg")
-    append_html \
-      '              <div class="fork-item error">' \
-      "                <div class=\"fork-name\">❌ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-      '                <span class="fork-status status-failed">Failed</span>' \
-      '                <div class="detail"><strong>Status:</strong> Failed to compare with upstream</div>' \
-      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-      "                <div class=\"detail\"><strong>Error:</strong> $error_msg_esc</div>" \
-      '              </div>'
+    bash .github/scripts/lib_template.sh ".github/templates/item_error.html" \
+      FORK_LINK="https://github.com/$fork_name" \
+      FORK_NAME_ESC="$fork_name_esc" \
+      DETAIL_TEXT="Failed to compare with upstream" \
+      UPSTREAM_LINK="https://github.com/$parent_name" \
+      UPSTREAM_ESC="$parent_name_esc" \
+      ERROR_MSG="$error_msg_esc"
     failed_count=$((failed_count + 1))
     continue
   fi
@@ -87,27 +88,23 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
     echo "::warning::$fork_name has $ahead_by commit(s) ahead of upstream. Manual intervention required."
     fork_name_esc=$(html_escape "$fork_name")
     parent_name_esc=$(html_escape "$parent_name")
-    append_html \
-      '              <div class="fork-item warning">' \
-      "                <div class=\"fork-name\">⚠️ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-      '                <span class="fork-status status-skipped">Skipped</span>' \
-      '                <div class="detail"><strong>Status:</strong> Skipped (has local commits)</div>' \
-      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-      "                <div class=\"detail\"><strong>Ahead by:</strong> $ahead_by commit(s)</div>" \
-      "                <div class=\"detail\"><strong>Behind by:</strong> $behind_by commit(s)</div>" \
-      '                <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>' \
-      '              </div>'
+    bash .github/scripts/lib_template.sh ".github/templates/item_warning.html" \
+      FORK_LINK="https://github.com/$fork_name" \
+      FORK_NAME_ESC="$fork_name_esc" \
+      ICON="⚠️" \
+      STATUS_TEXT="Skipped" \
+      DETAIL_TEXT="Skipped (has local commits)" \
+      EXTRA="<div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div><div class=\"detail\"><strong>Ahead by:</strong> $ahead_by commit(s)</div><div class=\"detail\"><strong>Behind by:</strong> $behind_by commit(s)</div><div class=\"detail\"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>"
     skipped_count=$((skipped_count + 1))
   elif [ "$behind_by" -eq 0 ]; then
     echo "  ✓ Already up to date"
     fork_name_esc=$(html_escape "$fork_name")
     parent_name_esc=$(html_escape "$parent_name")
-    append_html \
-      '              <div class="fork-item info">' \
-      "                <div class=\"fork-name\">✅ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-      '                <span class="fork-status status-uptodate">Up to date</span>' \
-      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-      '              </div>'
+    bash .github/scripts/lib_template.sh ".github/templates/item_info.html" \
+      FORK_LINK="https://github.com/$fork_name" \
+      FORK_NAME_ESC="$fork_name_esc" \
+      UPSTREAM_LINK="https://github.com/$parent_name" \
+      UPSTREAM_ESC="$parent_name_esc"
     no_changes_count=$((no_changes_count + 1))
   else
     echo "  Attempting to sync fork (behind by $behind_by commits)..."
@@ -120,28 +117,25 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
       echo "  ✓ Successfully synced fork"
       fork_name_esc=$(html_escape "$fork_name")
       parent_name_esc=$(html_escape "$parent_name")
-      append_html \
-        '                <div class="fork-item success">' \
-        "                  <div class=\"fork-name\">✅ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-        '                  <span class="fork-status status-updated">Updated</span>' \
-        '                  <div class="detail"><strong>Status:</strong> Successfully updated</div>' \
-        "                  <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-        "                  <div class=\"detail\"><strong>Commits synced:</strong> $behind_by</div>" \
-        '                </div>'
+      bash .github/scripts/lib_template.sh ".github/templates/item_success.html" \
+        FORK_LINK="https://github.com/$fork_name" \
+        FORK_NAME_ESC="$fork_name_esc" \
+        UPSTREAM_LINK="https://github.com/$parent_name" \
+        UPSTREAM_ESC="$parent_name_esc" \
+        COMMITS="$behind_by"
       updated_count=$((updated_count + 1))
     else
       if echo "$sync_output" | grep -qi "conflict"; then
         echo "::warning::$fork_name cannot be auto-synced: merge conflict"
         fork_name_esc=$(html_escape "$fork_name")
         parent_name_esc=$(html_escape "$parent_name")
-        append_html \
-          '                  <div class="fork-item warning">' \
-          "                    <div class=\"fork-name\">⚠️ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-          '                    <span class="fork-status status-skipped">Merge conflict</span>' \
-          '                    <div class="detail"><strong>Status:</strong> Merge conflict</div>' \
-          "                    <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-          '                    <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>' \
-          '                  </div>'
+        bash .github/scripts/lib_template.sh ".github/templates/item_warning.html" \
+          FORK_LINK="https://github.com/$fork_name" \
+          FORK_NAME_ESC="$fork_name_esc" \
+          ICON="⚠️" \
+          STATUS_TEXT="Merge conflict" \
+          DETAIL_TEXT="Merge conflict" \
+          EXTRA="<div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div><div class=\"detail\"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>"
         skipped_count=$((skipped_count + 1))
       else
         message=$(echo "$sync_output" | head -1)
@@ -149,14 +143,13 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
         fork_name_esc=$(html_escape "$fork_name")
         parent_name_esc=$(html_escape "$parent_name")
         message_esc=$(html_escape "$message")
-        append_html \
-          '                  <div class="fork-item error">' \
-          "                    <div class=\"fork-name\">❌ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
-          '                    <span class="fork-status status-failed">Failed</span>' \
-          '                    <div class="detail"><strong>Status:</strong> Failed</div>' \
-          "                    <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
-          "                    <div class=\"detail\"><strong>Error:</strong> $message_esc</div>" \
-          '                  </div>'
+        bash .github/scripts/lib_template.sh ".github/templates/item_error.html" \
+          FORK_LINK="https://github.com/$fork_name" \
+          FORK_NAME_ESC="$fork_name_esc" \
+          DETAIL_TEXT="Failed" \
+          UPSTREAM_LINK="https://github.com/$parent_name" \
+          UPSTREAM_ESC="$parent_name_esc" \
+          ERROR_MSG="$message_esc"
         failed_count=$((failed_count + 1))
       fi
     fi

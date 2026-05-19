@@ -1,0 +1,22 @@
+  <div class="summary">
+    <h2>Summary</h2>
+    <div class="summary-item"><strong>Total Forks:</strong> %%TOTAL%%</div>
+    <div class="summary-item"><strong>✅ Updated:</strong> %%UPDATED%%</div>
+    <div class="summary-item"><strong>⚠️ Skipped (local changes/conflicts):</strong> %%SKIPPED%%</div>
+    <div class="summary-item"><strong>✅ Already up to date:</strong> %%NO_CHANGES%%</div>
+    <div class="summary-item"><strong>❌ Failed:</strong> %%FAILED%%</div>
+  </div>
+  <div class="meta">
+    <a href="https://github.com/%%REPO%%/actions/runs/%%RUN_ID%%">View workflow run</a>
+  </div>
+  </div>
+<script>
+  const elem = document.getElementById("generated-utc");
+  const epoch = elem.dataset.epoch;
+  if (epoch) {
+    const date = new Date(parseInt(epoch, 10) * 1000);
+    elem.textContent = date.toString();
+  }
+</script>
+</body>
+</html>
