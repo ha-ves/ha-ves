@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+html_escape() {
+  echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
+}
+
+append_html() {
+  printf '%s\n' "$@" >> /tmp/email_report.html
+}
+
+updated_count=0
+skipped_count=0
+failed_count=0
+no_changes_count=0
+
+fork_count=$(cat /tmp/fork_count 2>/dev/null || echo 0)
+if [ "$fork_count" -eq 0 ]; then
+  echo "updated_count=0" >> "$GITHUB_OUTPUT"
+  echo "skipped_count=0" >> "$GITHUB_OUTPUT"
+  echo "failed_count=0" >> "$GITHUB_OUTPUT"
+  echo "no_changes_count=0" >> "$GITHUB_OUTPUT"
+  echo "total_count=0" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
+while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
+  echo ""
+  echo "Processing fork: $fork_name ($default_branch)"
+
+  if [ -n "${SKIP_REPOS:-}" ]; then
+    skip_this=false
+    OLDIFS="$IFS"
+    IFS=', '
+    for skip_entry in $SKIP_REPOS; do
+      [ -z "$skip_entry" ] && continue
+      if [ "$skip_entry" = "$fork_name" ]; then
+        skip_this=true
+        break
+      fi
+    done
+    IFS="$OLDIFS"
+    if [ "$skip_this" = "true" ]; then
+      echo "  ⏭ Skipping $fork_name (in SKIP_REPOS)"
+      fork_name_esc=$(html_escape "$fork_name")
+      append_html \
+        '                <div class="fork-item warning">' \
+        "                  <div class=\"fork-name\">⏭ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+        '                  <span class="fork-status status-skipped">Skipped</span>' \
+        '                  <div class="detail"><strong>Status:</strong> Skipped (excluded via SKIP_REPOS)</div>' \
+        '                </div>'
+      skipped_count=$((skipped_count + 1))
+      continue
+    fi
+  fi
+
+  parent_name="$parent_owner/$parent_repo"
+  set +e
+  compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
+  compare_exit=$?
+  set -e
+  if [ $compare_exit -ne 0 ]; then
+    error_msg=$(echo "$compare_result" | head -1)
+    echo "::error::Failed to compare $fork_name: $error_msg"
+
+    fork_name_esc=$(html_escape "$fork_name")
+    parent_name_esc=$(html_escape "$parent_name")
+    error_msg_esc=$(html_escape "$error_msg")
+    append_html \
+      '              <div class="fork-item error">' \
+      "                <div class=\"fork-name\">❌ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+      '                <span class="fork-status status-failed">Failed</span>' \
+      '                <div class="detail"><strong>Status:</strong> Failed to compare with upstream</div>' \
+      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+      "                <div class=\"detail\"><strong>Error:</strong> $error_msg_esc</div>" \
+      '              </div>'
+    failed_count=$((failed_count + 1))
+    continue
+  fi
+
+  ahead_by=$(echo "$compare_result" | jq -r '.ahead_by // 0')
+  behind_by=$(echo "$compare_result" | jq -r '.behind_by // 0')
+
+  echo "  Ahead: $ahead_by, Behind: $behind_by"
+
+  if [ "$ahead_by" -gt 0 ]; then
+    echo "::warning::$fork_name has $ahead_by commit(s) ahead of upstream. Manual intervention required."
+    fork_name_esc=$(html_escape "$fork_name")
+    parent_name_esc=$(html_escape "$parent_name")
+    append_html \
+      '              <div class="fork-item warning">' \
+      "                <div class=\"fork-name\">⚠️ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+      '                <span class="fork-status status-skipped">Skipped</span>' \
+      '                <div class="detail"><strong>Status:</strong> Skipped (has local commits)</div>' \
+      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+      "                <div class=\"detail\"><strong>Ahead by:</strong> $ahead_by commit(s)</div>" \
+      "                <div class=\"detail\"><strong>Behind by:</strong> $behind_by commit(s)</div>" \
+      '                <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>' \
+      '              </div>'
+    skipped_count=$((skipped_count + 1))
+  elif [ "$behind_by" -eq 0 ]; then
+    echo "  ✓ Already up to date"
+    fork_name_esc=$(html_escape "$fork_name")
+    parent_name_esc=$(html_escape "$parent_name")
+    append_html \
+      '              <div class="fork-item info">' \
+      "                <div class=\"fork-name\">✅ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+      '                <span class="fork-status status-uptodate">Up to date</span>' \
+      "                <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+      '              </div>'
+    no_changes_count=$((no_changes_count + 1))
+  else
+    echo "  Attempting to sync fork (behind by $behind_by commits)..."
+    set +e
+    sync_output=$(gh repo sync "$fork_name" --branch "$default_branch" 2>&1)
+    sync_exit=$?
+    set -e
+
+    if [ $sync_exit -eq 0 ]; then
+      echo "  ✓ Successfully synced fork"
+      fork_name_esc=$(html_escape "$fork_name")
+      parent_name_esc=$(html_escape "$parent_name")
+      append_html \
+        '                <div class="fork-item success">' \
+        "                  <div class=\"fork-name\">✅ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+        '                  <span class="fork-status status-updated">Updated</span>' \
+        '                  <div class="detail"><strong>Status:</strong> Successfully updated</div>' \
+        "                  <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+        "                  <div class=\"detail\"><strong>Commits synced:</strong> $behind_by</div>" \
+        '                </div>'
+      updated_count=$((updated_count + 1))
+    else
+      if echo "$sync_output" | grep -qi "conflict"; then
+        echo "::warning::$fork_name cannot be auto-synced: merge conflict"
+        fork_name_esc=$(html_escape "$fork_name")
+        parent_name_esc=$(html_escape "$parent_name")
+        append_html \
+          '                  <div class="fork-item warning">' \
+          "                    <div class=\"fork-name\">⚠️ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+          '                    <span class="fork-status status-skipped">Merge conflict</span>' \
+          '                    <div class="detail"><strong>Status:</strong> Merge conflict</div>' \
+          "                    <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+          '                    <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>' \
+          '                  </div>'
+        skipped_count=$((skipped_count + 1))
+      else
+        message=$(echo "$sync_output" | head -1)
+        echo "::error::Failed to sync $fork_name: $message"
+        fork_name_esc=$(html_escape "$fork_name")
+        parent_name_esc=$(html_escape "$parent_name")
+        message_esc=$(html_escape "$message")
+        append_html \
+          '                  <div class="fork-item error">' \
+          "                    <div class=\"fork-name\">❌ <a href=\"https://github.com/$fork_name\">$fork_name_esc</a></div>" \
+          '                    <span class="fork-status status-failed">Failed</span>' \
+          '                    <div class="detail"><strong>Status:</strong> Failed</div>' \
+          "                    <div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div>" \
+          "                    <div class=\"detail\"><strong>Error:</strong> $message_esc</div>" \
+          '                  </div>'
+        failed_count=$((failed_count + 1))
+      fi
+    fi
+  fi
+
+done < /tmp/forks.txt
+
+echo "updated_count=$updated_count" >> "$GITHUB_OUTPUT"
+echo "skipped_count=$skipped_count" >> "$GITHUB_OUTPUT"
+echo "failed_count=$failed_count" >> "$GITHUB_OUTPUT"
+echo "no_changes_count=$no_changes_count" >> "$GITHUB_OUTPUT"
+echo "total_count=$fork_count" >> "$GITHUB_OUTPUT"

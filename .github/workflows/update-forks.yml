@@ -29,30 +29,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Process forks and update
-        id: process-forks
+      - name: Prepare fork report
         env:
           GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
-          SKIP_REPOS: ${{ vars.SKIP_REPOS }}
         run: |
-          # Initialize counters
-          updated_count=0
-          skipped_count=0
-          failed_count=0
-          no_changes_count=0
+          echo "# Fork Update Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Function to escape HTML special characters
-          html_escape() {
-            echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'
-          }
-
-          # Initialize job summary
-          echo "# Fork Update Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Initialize HTML email report (static header only — no $() expansion)
           cat > /tmp/email_report.html << 'HTMLEOF'
           <!DOCTYPE html>
           <html>
@@ -86,8 +71,7 @@ jobs:
               <h1>🔄 Fork Update Report</h1>
           HTMLEOF
 
-          # Append the date line separately so $(date) expands correctly
-          echo "      <div class=\"meta\">Generated: <span id=\"generated-utc\" data-epoch=\"$(date -u +%s)\">$(date -u '+%Y-%m-%d %H:%M:%S UTC')</span></div>" >> /tmp/email_report.html
+          printf '%s\n' "      <div class=\"meta\">Generated: <span id=\"generated-utc\" data-epoch=\"$(date -u +%s)\">$(date -u '+%Y-%m-%d %H:%M:%S UTC')</span></div>" >> /tmp/email_report.html
 
           # Fetch forked repositories using gh CLI
           echo "Fetching forked repositories..."
@@ -100,265 +84,66 @@ jobs:
           fi
 
           fork_count=$(wc -l < /tmp/forks.txt | tr -d ' ')
+          echo "$fork_count" > /tmp/fork_count
 
           if [ "$fork_count" -eq 0 ]; then
             echo "No forks found."
             echo "**No forks found.**" >> $GITHUB_STEP_SUMMARY
-            exit 0
+            echo "Found 0 forks"
+          else
+            echo "Found $fork_count fork(s)"
+            echo "---" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "Found $fork_count fork(s)"
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+      - name: Process forks
+        id: process-forks
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
+          SKIP_REPOS: ${{ vars.SKIP_REPOS }}
+        run: .github/scripts/update-forks-report.sh
 
-          while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
-            echo ""
-            echo "Processing fork: $fork_name ($default_branch)"
+      - name: Finalize fork report
+        env:
+          UPDATED_COUNT: ${{ steps.process-forks.outputs.updated_count }}
+          SKIPPED_COUNT: ${{ steps.process-forks.outputs.skipped_count }}
+          FAILED_COUNT: ${{ steps.process-forks.outputs.failed_count }}
+          NO_CHANGES_COUNT: ${{ steps.process-forks.outputs.no_changes_count }}
+          TOTAL_COUNT: ${{ steps.process-forks.outputs.total_count }}
+        run: |
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Total Forks:** $TOTAL_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Updated:** $UPDATED_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skipped (local changes/conflicts):** $SKIPPED_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Already up to date:** $NO_CHANGES_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Failed:** $FAILED_COUNT" >> "$GITHUB_STEP_SUMMARY"
 
-            # Check if this repo should be skipped via SKIP_REPOS variable
-            if [ -n "$SKIP_REPOS" ]; then
-              skip_this=false
-              # Support comma or space separated list
-              OLDIFS="$IFS"
-              IFS=', '
-              for skip_entry in $SKIP_REPOS; do
-                [ -z "$skip_entry" ] && continue
-                if [ "$skip_entry" = "$fork_name" ]; then
-                  skip_this=true
-                  break
-                fi
-              done
-              IFS="$OLDIFS"
-              if [ "$skip_this" = "true" ]; then
-                echo "  ⏭ Skipping $fork_name (in SKIP_REPOS)"
-
-                echo "## ⏭ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "**Status:** Skipped (excluded via SKIP_REPOS)" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-
-                fork_name_esc=$(html_escape "$fork_name")
-                cat >> /tmp/email_report.html << __HTML__
-                <div class="fork-item warning">
-                  <div class="fork-name">⏭ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                  <span class="fork-status status-skipped">Skipped</span>
-                  <div class="detail"><strong>Status:</strong> Skipped (excluded via SKIP_REPOS)</div>
-                </div>
-            __HTML__
-
-                skipped_count=$((skipped_count + 1))
-                continue
-              fi
-            fi
-
-            # Check ahead/behind using gh api
-            parent_name="$parent_owner/$parent_repo"
-            set +e
-            compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
-            compare_exit=$?
-            set -e
-            if [ $compare_exit -ne 0 ]; then
-              error_msg=$(echo "$compare_result" | head -1)
-              echo "::error::Failed to compare $fork_name: $error_msg"
-
-              echo "## ❌ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Status:** Failed to compare with upstream" >> $GITHUB_STEP_SUMMARY
-              echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-              echo "**Error:** $error_msg" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-
-              fork_name_esc=$(html_escape "$fork_name")
-              parent_name_esc=$(html_escape "$parent_name")
-              error_msg_esc=$(html_escape "$error_msg")
-              cat >> /tmp/email_report.html << __HTML__
-              <div class="fork-item error">
-                <div class="fork-name">❌ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                <span class="fork-status status-failed">Failed</span>
-                <div class="detail"><strong>Status:</strong> Failed to compare with upstream</div>
-                <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-                <div class="detail"><strong>Error:</strong> $error_msg_esc</div>
-              </div>
-          __HTML__
-
-              failed_count=$((failed_count + 1))
-              continue
-            fi
-
-            ahead_by=$(echo "$compare_result" | jq -r '.ahead_by // 0')
-            behind_by=$(echo "$compare_result" | jq -r '.behind_by // 0')
-
-            echo "  Ahead: $ahead_by, Behind: $behind_by"
-
-            if [ "$ahead_by" -gt 0 ]; then
-              echo "::warning::$fork_name has $ahead_by commit(s) ahead of upstream. Manual intervention required."
-
-              echo "## ⚠️ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Status:** Skipped (has local commits)" >> $GITHUB_STEP_SUMMARY
-              echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-              echo "**Ahead by:** $ahead_by commit(s)" >> $GITHUB_STEP_SUMMARY
-              echo "**Behind by:** $behind_by commit(s)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Action Required:** This fork has local commits. You need to manually merge or rebase." >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-
-              fork_name_esc=$(html_escape "$fork_name")
-              parent_name_esc=$(html_escape "$parent_name")
-              cat >> /tmp/email_report.html << __HTML__
-              <div class="fork-item warning">
-                <div class="fork-name">⚠️ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                <span class="fork-status status-skipped">Skipped</span>
-                <div class="detail"><strong>Status:</strong> Skipped (has local commits)</div>
-                <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-                <div class="detail"><strong>Ahead by:</strong> $ahead_by commit(s)</div>
-                <div class="detail"><strong>Behind by:</strong> $behind_by commit(s)</div>
-                <div class="detail"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>
-              </div>
-          __HTML__
-
-              skipped_count=$((skipped_count + 1))
-
-            elif [ "$behind_by" -eq 0 ]; then
-              echo "  ✓ Already up to date"
-
-              echo "## ✅ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**Status:** Up to date" >> $GITHUB_STEP_SUMMARY
-              echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-
-              fork_name_esc=$(html_escape "$fork_name")
-              parent_name_esc=$(html_escape "$parent_name")
-              cat >> /tmp/email_report.html << __HTML__
-              <div class="fork-item info">
-                <div class="fork-name">✅ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                <span class="fork-status status-uptodate">Up to date</span>
-                <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-              </div>
-          __HTML__
-
-              no_changes_count=$((no_changes_count + 1))
-
-            else
-              echo "  Attempting to sync fork (behind by $behind_by commits)..."
-
-              set +e
-              sync_output=$(gh repo sync "$fork_name" --branch "$default_branch" 2>&1)
-              sync_exit=$?
-              set -e
-
-              if [ $sync_exit -eq 0 ]; then
-                echo "  ✓ Successfully synced fork"
-
-                echo "## ✅ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "**Status:** Successfully updated" >> $GITHUB_STEP_SUMMARY
-                echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-                echo "**Commits synced:** $behind_by" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-
-                fork_name_esc=$(html_escape "$fork_name")
-                parent_name_esc=$(html_escape "$parent_name")
-                cat >> /tmp/email_report.html << __HTML__
-                <div class="fork-item success">
-                  <div class="fork-name">✅ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                  <span class="fork-status status-updated">Updated</span>
-                  <div class="detail"><strong>Status:</strong> Successfully updated</div>
-                  <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-                  <div class="detail"><strong>Commits synced:</strong> $behind_by</div>
-                </div>
-          __HTML__
-
-                updated_count=$((updated_count + 1))
-
-              else
-                # Check if it's a conflict vs other failure
-                if echo "$sync_output" | grep -qi "conflict"; then
-                  echo "::warning::$fork_name cannot be auto-synced: merge conflict"
-
-                  echo "## ⚠️ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**Status:** Merge conflict" >> $GITHUB_STEP_SUMMARY
-                  echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-                  echo "**Action Required:** Manual merge required due to conflicts." >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-
-                  fork_name_esc=$(html_escape "$fork_name")
-                  parent_name_esc=$(html_escape "$parent_name")
-                  cat >> /tmp/email_report.html << __HTML__
-                  <div class="fork-item warning">
-                    <div class="fork-name">⚠️ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                    <span class="fork-status status-skipped">Merge conflict</span>
-                    <div class="detail"><strong>Status:</strong> Merge conflict</div>
-                    <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-                    <div class="detail"><strong>Action Required:</strong> Manual merge required due to conflicts.</div>
-                  </div>
-          __HTML__
-
-                  skipped_count=$((skipped_count + 1))
-                else
-                  message=$(echo "$sync_output" | head -1)
-                  echo "::error::Failed to sync $fork_name: $message"
-
-                  echo "## ❌ [$fork_name](https://github.com/$fork_name)" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**Status:** Failed" >> $GITHUB_STEP_SUMMARY
-                  echo "**Upstream:** [$parent_name](https://github.com/$parent_name)" >> $GITHUB_STEP_SUMMARY
-                  echo "**Error:** $message" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-
-                  fork_name_esc=$(html_escape "$fork_name")
-                  parent_name_esc=$(html_escape "$parent_name")
-                  message_esc=$(html_escape "$message")
-                  cat >> /tmp/email_report.html << __HTML__
-                  <div class="fork-item error">
-                    <div class="fork-name">❌ <a href="https://github.com/$fork_name">$fork_name_esc</a></div>
-                    <span class="fork-status status-failed">Failed</span>
-                    <div class="detail"><strong>Status:</strong> Failed</div>
-                    <div class="detail"><strong>Upstream:</strong> <a href="https://github.com/$parent_name">$parent_name_esc</a></div>
-                    <div class="detail"><strong>Error:</strong> $message_esc</div>
-                  </div>
-          __HTML__
-
-                  failed_count=$((failed_count + 1))
-                fi
-              fi
-            fi
-          done < /tmp/forks.txt
-
-          # Add summary to job summary
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Forks:** $fork_count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Updated:** $updated_count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Skipped (local changes/conflicts):** $skipped_count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Already up to date:** $no_changes_count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Failed:** $failed_count" >> $GITHUB_STEP_SUMMARY
-
-          # Finalize email report
-          cat >> /tmp/email_report.html << EOF
-          <div class="summary">
-            <h2>Summary</h2>
-            <div class="summary-item"><strong>Total Forks:</strong> $fork_count</div>
-            <div class="summary-item"><strong>✅ Updated:</strong> $updated_count</div>
-            <div class="summary-item"><strong>⚠️ Skipped (local changes/conflicts):</strong> $skipped_count</div>
-            <div class="summary-item"><strong>✅ Already up to date:</strong> $no_changes_count</div>
-            <div class="summary-item"><strong>❌ Failed:</strong> $failed_count</div>
-          </div>
-          <div class="meta">
-            <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run</a>
-          </div>
-          EOF
-
-          # Set outputs
-          echo "updated_count=$updated_count" >> $GITHUB_OUTPUT
-          echo "skipped_count=$skipped_count" >> $GITHUB_OUTPUT
-          echo "failed_count=$failed_count" >> $GITHUB_OUTPUT
-          echo "no_changes_count=$no_changes_count" >> $GITHUB_OUTPUT
-          echo "total_count=$fork_count" >> $GITHUB_OUTPUT
+          printf '%s\n' \
+            '          <div class="summary">' \
+            '            <h2>Summary</h2>' \
+            "            <div class=\"summary-item\"><strong>Total Forks:</strong> $TOTAL_COUNT</div>" \
+            "            <div class=\"summary-item\"><strong>✅ Updated:</strong> $UPDATED_COUNT</div>" \
+            "            <div class=\"summary-item\"><strong>⚠️ Skipped (local changes/conflicts):</strong> $SKIPPED_COUNT</div>" \
+            "            <div class=\"summary-item\"><strong>✅ Already up to date:</strong> $NO_CHANGES_COUNT</div>" \
+            "            <div class=\"summary-item\"><strong>❌ Failed:</strong> $FAILED_COUNT</div>" \
+            '          </div>' \
+            '          <div class="meta">' \
+            "            <a href=\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View workflow run</a>" \
+            '          </div>' \
+            '          </div>' \
+            '<script>' \
+            '  const elem = document.getElementById("generated-utc");' \
+            '  const epoch = elem.dataset.epoch;' \
+            '  if (epoch) {' \
+            '    const date = new Date(parseInt(epoch, 10) * 1000);' \
+            '    elem.textContent = date.toString();' \
+            '  }' \
+            '</script>' \
+            '</body>' \
+            '</html>' >> /tmp/email_report.html
 
       - name: Send email notification (SMTP)
         if: always()
@@ -372,19 +157,12 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
         run: |
           echo "## 📧 Email" >> $GITHUB_STEP_SUMMARY
-          cat >> /tmp/email_report.html << EOF
-          </div>
-          <script>
-            const elem = document.getElementById("generated-utc");
-            const epoch = elem.dataset.epoch;
-            if (epoch) {
-              const date = new Date(parseInt(epoch, 10) * 1000);
-              elem.textContent = date.toString();
-            }
-          </script>
-          </body>
-          </html>
-          EOF
+
+          if [ ! -f /tmp/email_report.html ]; then
+            echo "⚠️ Email report was not generated; skipping email notification."
+            echo "⚠️ Email skipped: report file was not generated." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
         
           if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
             echo "⚠️ SMTP credentials not configured. Skipping email notification."
