@@ -29,6 +29,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Gather forks
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          bash .github/scripts/gather_forks.sh
+
       - name: Prepare fork report
         env:
           GH_TOKEN: ${{ secrets.METRICS_TOKEN }}

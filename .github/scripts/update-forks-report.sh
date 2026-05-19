@@ -15,7 +15,11 @@ skipped_count=0
 failed_count=0
 no_changes_count=0
 
-fork_count=$(cat /tmp/fork_count 2>/dev/null || echo 0)
+if [ -f /tmp/forks.txt ]; then
+  fork_count=$(wc -l < /tmp/forks.txt | tr -d '[:space:]')
+else
+  fork_count=0
+fi
 if [ "$fork_count" -eq 0 ]; then
   echo "updated_count=0" >> "$GITHUB_OUTPUT"
   echo "skipped_count=0" >> "$GITHUB_OUTPUT"
