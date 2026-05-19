@@ -56,7 +56,7 @@ jobs:
           echo "---" >> "$GITHUB_STEP_SUMMARY"
           bash .github/scripts/render_footer.sh
 
-      - name: Send email notification (SMTP)
+      - name: Send email notification (SMTP / OAuth)
         if: always()
         continue-on-error: true
         env:
@@ -66,34 +66,14 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM || secrets.SMTP_USERNAME }}
           EMAIL_TO: ${{ secrets.EMAIL_TO || secrets.SMTP_USERNAME }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OAUTH_TOKEN_URL: ${{ secrets.OAUTH_TOKEN_URL }}
         run: |
-          echo "## 📧 Email" >> $GITHUB_STEP_SUMMARY
-
-          if [ ! -f /tmp/email_report.html ]; then
-            echo "⚠️ Email report was not generated; skipping email notification."
-            echo "⚠️ Email skipped: report file was not generated." >> $GITHUB_STEP_SUMMARY
-            exit 0
+          # If OAuth creds are set, install only the google-auth deps we need
+          if [ -n "${OAUTH_CLIENT_ID:-}" ] && [ -n "${OAUTH_CLIENT_SECRET:-}" ] && [ -n "${OAUTH_REFRESH_TOKEN:-}" ]; then
+            python -m pip install --upgrade pip
+            pip install google-auth
           fi
-        
-          if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ]; then
-            echo "⚠️ SMTP credentials not configured. Skipping email notification."
-            echo "To enable email notifications, set the following secrets:"
-            echo "  - SMTP_USERNAME (required)"
-            echo "  - SMTP_PASSWORD (required)"
-            echo "  - SMTP_HOST (optional, defaults to smtp.gmail.com)"
-            echo "  - SMTP_PORT (optional, defaults to 587)"
-            echo "  - EMAIL_FROM (optional, defaults to SMTP_USERNAME)"
-            echo "  - EMAIL_TO (optional, defaults to SMTP_USERNAME)"
-            echo "⚠️ Email skipped: SMTP credentials (SMTP_USERNAME / SMTP_PASSWORD) not configured." >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-          # Use the Python standard-library email sender (no extra packages required)
-          python3 .github/scripts/send_email.py
-          py_exit=$?
-          if [ $py_exit -eq 0 ]; then
-            echo "✅ Email notification sent successfully."
-            echo "✅ Email notification sent successfully." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ Email notification failed (python exit $py_exit). Check SMTP settings and runner egress rules."
-            echo "⚠️ Email notification failed. Check SMTP_HOST/SMTP_PORT and runner egress rules." >> $GITHUB_STEP_SUMMARY
-          fi
+          bash .github/scripts/send_email_notification.sh
