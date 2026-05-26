@@ -62,7 +62,54 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
 
   parent_name="$parent_owner/$parent_repo"
   set +e
-  compare_result=$(gh api "repos/$fork_name/compare/$parent_owner:$default_branch...$default_branch" 2>&1)
+  parent_head_sha=$(gh api "repos/$parent_owner/$parent_repo/commits/$default_branch" --jq '.sha' 2>&1)
+  parent_sha_exit=$?
+  set -e
+  if [ $parent_sha_exit -ne 0 ]; then
+    error_msg=$(echo "$parent_head_sha" | head -1)
+    echo "::error::Failed to resolve upstream commit for $fork_name: $error_msg"
+
+    fork_name_esc=$(html_escape "$fork_name")
+    parent_name_esc=$(html_escape "$parent_name")
+    error_msg_esc=$(html_escape "$error_msg")
+    bash .github/scripts/lib_template.sh ".github/templates/item_error.html" \
+      FORK_LINK="https://github.com/$fork_name" \
+      FORK_NAME_ESC="$fork_name_esc" \
+      DETAIL_TEXT="Failed to resolve upstream commit" \
+      UPSTREAM_LINK="https://github.com/$parent_name" \
+      UPSTREAM_ESC="$parent_name_esc" \
+      ERROR_MSG="$error_msg_esc" \
+      COMPARE_LINK="https://github.com/$fork_name"
+    failed_count=$((failed_count + 1))
+    continue
+  fi
+
+  set +e
+  fork_head_sha=$(gh api "repos/$fork_name/commits/$default_branch" --jq '.sha' 2>&1)
+  fork_sha_exit=$?
+  set -e
+  if [ $fork_sha_exit -ne 0 ]; then
+    error_msg=$(echo "$fork_head_sha" | head -1)
+    echo "::error::Failed to resolve fork commit for $fork_name: $error_msg"
+
+    fork_name_esc=$(html_escape "$fork_name")
+    parent_name_esc=$(html_escape "$parent_name")
+    error_msg_esc=$(html_escape "$error_msg")
+    bash .github/scripts/lib_template.sh ".github/templates/item_error.html" \
+      FORK_LINK="https://github.com/$fork_name" \
+      FORK_NAME_ESC="$fork_name_esc" \
+      DETAIL_TEXT="Failed to resolve fork commit" \
+      UPSTREAM_LINK="https://github.com/$parent_name" \
+      UPSTREAM_ESC="$parent_name_esc" \
+      ERROR_MSG="$error_msg_esc" \
+      COMPARE_LINK="https://github.com/$fork_name"
+    failed_count=$((failed_count + 1))
+    continue
+  fi
+
+  compare_link="https://github.com/$fork_name/compare/${parent_head_sha}...${fork_head_sha}"
+  set +e
+  compare_result=$(gh api "repos/$fork_name/compare/${parent_head_sha}...${fork_head_sha}" 2>&1)
   compare_exit=$?
   set -e
   if [ $compare_exit -ne 0 ]; then
@@ -78,7 +125,8 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
       DETAIL_TEXT="Failed to compare with upstream" \
       UPSTREAM_LINK="https://github.com/$parent_name" \
       UPSTREAM_ESC="$parent_name_esc" \
-      ERROR_MSG="$error_msg_esc"
+      ERROR_MSG="$error_msg_esc" \
+      COMPARE_LINK="$compare_link"
     failed_count=$((failed_count + 1))
     continue
   fi
@@ -98,7 +146,8 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
       ICON="⚠️" \
       STATUS_TEXT="Skipped" \
       DETAIL_TEXT="Skipped (has local commits)" \
-      EXTRA="<div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div><div class=\"detail\"><strong>Ahead by:</strong> $ahead_by commit(s)</div><div class=\"detail\"><strong>Behind by:</strong> $behind_by commit(s)</div><div class=\"detail\"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div>"
+      EXTRA="<div class=\"detail\"><strong>Upstream:</strong> <a href=\"https://github.com/$parent_name\">$parent_name_esc</a></div><div class=\"detail\"><strong>Ahead by:</strong> $ahead_by commit(s)</div><div class=\"detail\"><strong>Behind by:</strong> $behind_by commit(s)</div><div class=\"detail\"><strong>Action Required:</strong> This fork has local commits. You need to manually merge or rebase.</div><div class=\"detail\"><a href=\"$compare_link\">Compare</a></div>" \
+      COMPARE_LINK="$compare_link"
     skipped_count=$((skipped_count + 1))
   elif [ "$behind_by" -eq 0 ]; then
     echo "  ✓ Already up to date"
@@ -108,7 +157,8 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
       FORK_LINK="https://github.com/$fork_name" \
       FORK_NAME_ESC="$fork_name_esc" \
       UPSTREAM_LINK="https://github.com/$parent_name" \
-      UPSTREAM_ESC="$parent_name_esc"
+      UPSTREAM_ESC="$parent_name_esc" \
+      COMPARE_LINK="$compare_link"
     no_changes_count=$((no_changes_count + 1))
   else
     echo "  Attempting to sync fork (behind by $behind_by commits)..."
@@ -126,7 +176,8 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
         FORK_NAME_ESC="$fork_name_esc" \
         UPSTREAM_LINK="https://github.com/$parent_name" \
         UPSTREAM_ESC="$parent_name_esc" \
-        COMMITS="$behind_by"
+        COMMITS="$behind_by" \
+        COMPARE_LINK="$compare_link"
       updated_count=$((updated_count + 1))
     else
       if echo "$sync_output" | grep -qi "conflict"; then
@@ -153,7 +204,8 @@ while IFS=$'\t' read -r fork_name parent_owner parent_repo default_branch; do
           DETAIL_TEXT="Failed" \
           UPSTREAM_LINK="https://github.com/$parent_name" \
           UPSTREAM_ESC="$parent_name_esc" \
-          ERROR_MSG="$message_esc"
+          ERROR_MSG="$message_esc" \
+          COMPARE_LINK="$compare_link"
         failed_count=$((failed_count + 1))
       fi
     fi
