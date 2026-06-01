@@ -60,12 +60,10 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          echo "---" >> "$GITHUB_STEP_SUMMARY"
           bash .github/scripts/render_footer.sh
 
       - name: Send email notification (SMTP / OAuth)
         if: always()
-        continue-on-error: true
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
@@ -79,9 +77,4 @@ jobs:
           OAUTH_USER_EMAIL: ${{ secrets.OAUTH_USER_EMAIL }}
           OAUTH_TOKEN_URL: ${{ secrets.OAUTH_TOKEN_URL }}
         run: |
-          # If OAuth creds are set, install only the google-auth deps we need
-          if [ -n "${OAUTH_CLIENT_ID:-}" ] && [ -n "${OAUTH_CLIENT_SECRET:-}" ] && [ -n "${OAUTH_REFRESH_TOKEN:-}" ]; then
-            python -m pip install --upgrade pip
-            pip install google-auth
-          fi
           bash .github/scripts/send_email_notification.sh

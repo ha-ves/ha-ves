@@ -22,6 +22,7 @@ bash .github/scripts/lib_template.sh "$TEMPLATE" \
   RUN_ID="$RUN_ID"
 
 # Output summary to GITHUB_STEP_SUMMARY
+echo "---" >> "$GITHUB_STEP_SUMMARY"
 echo "" >> "$GITHUB_STEP_SUMMARY"
 echo "## Summary" >> "$GITHUB_STEP_SUMMARY"
 echo "" >> "$GITHUB_STEP_SUMMARY"

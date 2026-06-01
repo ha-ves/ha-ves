@@ -38,6 +38,11 @@ if [ -n "${OAUTH_CLIENT_ID:-}" ] && [ -n "${OAUTH_CLIENT_SECRET:-}" ] && [ -n "$
   exit 0
 fi
 
+if [ -n "${OAUTH_CLIENT_ID:-}" ] && [ -n "${OAUTH_CLIENT_SECRET:-}" ] && [ -n "${OAUTH_REFRESH_TOKEN:-}" ]; then
+  python3 -m pip install --upgrade pip
+  python3 -m pip install google-auth
+fi
+
 # Use the Python standard-library email sender (no extra packages required)
 python3 .github/scripts/send_email.py
 py_exit=$?
@@ -47,4 +52,5 @@ if [ $py_exit -eq 0 ]; then
 else
   echo "⚠️ Email notification failed (python exit $py_exit). Check SMTP settings and runner egress rules."
   echo "⚠️ Email notification failed. Check SMTP_HOST/SMTP_PORT and runner egress rules." >> "$GITHUB_STEP_SUMMARY"
+  exit $py_exit
 fi
